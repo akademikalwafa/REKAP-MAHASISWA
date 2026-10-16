@@ -6,6 +6,14 @@
 
 const FORMAT_DEF = { CUTI: '{NO}.C/{KODE_PRODI}/STIS-AL-WAFA/{BULAN_ROMAWI}/{TAHUN}', MUNDUR: '{NO}/MR.ADMK/STIS-AL-WAFA/{BULAN_ROMAWI}/{TAHUN}' };
 
+/** v1.1 — Counter efektif TAHUN INI, aturan yang sama dengan server: reset tahunan aktif + counter tercatat tahun lalu → 0. */
+function ctrEfektif(key, jenis) {
+  const c = S.nomor[key] || {}, base = S.nomor[jenis] || {};
+  const n = +c.nomor_terakhir || 0, th = +c.tahun_terakhir || 0, y = +todayStr().slice(0, 4);
+  const direset = !!(base.reset_tahunan && th && y > th && n > 0);
+  return { n: direset ? 0 : n, asli: n, th, direset };
+}
+
 // =====================================================================
 // PENGATURAN PENOMORAN SURAT
 // =====================================================================
@@ -13,7 +21,8 @@ registerPage('penomoran', {
   admin: true, crumb: ['Pengaturan', 'Penomoran Surat'],
   template: () => `
     <div class="hero"><div class="deco">123</div>
-      <div class="eyebrow">${ic('settings')} Pengaturan Sistem</div>
+      <div class="hero-row"><div class="eyebrow">${ic('settings')} Pengaturan Sistem</div>
+        <button class="btn btn-primary hero-save" data-act="simpan">${ic('save')} Simpan Perubahan</button></div>
       <h1>Konfigurasi Penomoran Surat</h1>
       <p>Kelola format penomoran otomatis untuk Surat Cuti Akademik dan Surat Pengunduran Diri Mahasiswa. Pastikan struktur nomor urut dan variabel penomoran sesuai dengan standar tata naskah dinas akademik.</p>
     </div>
@@ -26,14 +35,14 @@ registerPage('penomoran', {
           <span class="pill gold">Aktif</span>
         </div>
         <div class="grid g2" style="gap:16px">
-          <div class="counter-box"><label class="lbl-f" for="n-${j}-ctr">Counter Terakhir</label><input class="input" id="n-${j}-ctr" data-k="ctr" type="number" min="0" max="99999" inputmode="numeric"></div>
+          <div class="counter-box"><label class="lbl-f" for="n-${j}-ctr">Counter Terakhir</label><input class="input" id="n-${j}-ctr" data-k="ctr" type="number" min="0" max="99999" inputmode="numeric"><span class="hint" data-ctr-hint>Nomor berikutnya = counter + 1</span></div>
           <div class="counter-box"><label class="lbl-f" for="n-${j}-dg">Jumlah Digit</label><select class="input" id="n-${j}-dg" data-k="digit">${[2, 3, 4, 5, 6].map((d) => `<option value="${d}">${d} (${pad(7, d)})</option>`).join('')}</select></div>
         </div>
         ${j === 'CUTI' ? `<div class="field mt-s"><label class="lbl-f" for="n-mode">Mode counter cuti</label>
           <select class="input" id="n-mode" data-k="mode"><option value="BERSAMA">Satu counter bersama untuk semua prodi (default PRD)</option><option value="PER_PRODI">Counter terpisah per prodi</option></select></div>
           <div class="grid g4 mt-s" data-perprodi style="gap:10px">${Object.keys(PRODI).map((p) => `<div class="counter-box" style="padding:12px"><label class="lbl-f" for="n-pp-${p}" style="font-size:13px">Counter ${p}</label><input class="input" id="n-pp-${p}" data-pp="${p}" type="number" min="0" inputmode="numeric" style="font-size:16px"></div>`).join('')}</div>` : ''}
         <label class="switch mt-s" style="margin-top:16px"><input type="checkbox" data-k="reset"><span class="tr"></span><span>Mulai dari 001 otomatis setiap tahun baru</span></label>
-        <div class="mini">Preview Format Surat</div>
+        <div class="mini">Nomor Surat Berikutnya <span class="pill gold" data-belum hidden>belum disimpan</span></div>
         <div class="nomor-preview" data-prev></div>
         <details class="mt-s"><summary class="btn-link" style="cursor:pointer">${ic('pencil')} Ubah format nomor</summary>
           <div class="field mt-s"><input class="input mono" data-k="format" spellcheck="false"><span class="hint">Variabel: <code>{NO}</code> nomor urut (wajib), <code>{KODE_PRODI}</code>, <code>{BULAN_ROMAWI}</code>, <code>{BULAN}</code>, <code>{TAHUN}</code>.</span></div>
@@ -55,12 +64,14 @@ registerPage('penomoran', {
       </div>
       <div data-log></div>
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:14px;margin-top:28px;flex-wrap:wrap">
+    <div class="save-bar" data-savebar>
+      <span class="grow" data-save-status></span>
       <button class="btn btn-ghost" data-act="default">Kembali ke Default</button>
       <button class="btn btn-navy" data-act="simpan">${ic('save')} Simpan Perubahan</button>
     </div>`,
   mount(el) {
     const self = this;
+    this.el = el;
     this.tbl = new Tabel($('[data-log]', el), {
       id: 'lognomor', pageSize: 10, empty: 'Belum ada perubahan penomoran.',
       cols: [
@@ -84,20 +95,57 @@ registerPage('penomoran', {
       }
     });
   },
-  show(el) { if (!el._filled || pageNeedsRender(el)) this.isi(el); },
-  onData(el) { if (!this.dirty) this.isi(el); },
+  // Input yang belum disimpan TIDAK ditimpa saat kembali ke halaman / data diperbarui
+  show(el) { if (!el._filled || !this.isDirty()) this.isi(el); else this.tbl.setRows(this.logRows(), false); },
+  onData(el) { if (!this.isDirty()) this.isi(el); else this.tbl.setRows(this.logRows(), false); },
+  /** Nilai tersimpan di server, dalam bentuk yang sama dengan baca() */
+  nilaiAsli() {
+    const out = {};
+    ['CUTI', 'MUNDUR'].forEach((j) => {
+      const n = S.nomor[j] || {};
+      out[j] = { nomor_terakhir: String(ctrEfektif(j, j).n), digit: n.digit || 3, format: (n.format || FORMAT_DEF[j]).trim(), reset_tahunan: !!n.reset_tahunan };
+      if (j === 'CUTI') {
+        out.CUTI.mode = n.mode === 'PER_PRODI' ? 'PER_PRODI' : 'BERSAMA';
+        out.CUTI.per_prodi = {};
+        Object.keys(PRODI).forEach((p) => { out.CUTI.per_prodi[p] = String(ctrEfektif('CUTI_' + p, 'CUTI').n); });
+      }
+    });
+    return out;
+  },
+  isDirty() {
+    if (!this.el || !this.el._filled) return false;
+    const norm = (v) => JSON.stringify(v, (k, x) => (typeof x === 'number' ? String(x) : (typeof x === 'string' ? x.trim().replace(/^0+(?=\d)/, '') : x)));
+    return norm(this.baca(this.el)) !== norm(this.nilaiAsli());
+  },
+  beforeLeave() {
+    return new Promise((resolve) => {
+      let selesai = false;
+      const m = modal({
+        title: 'Perubahan penomoran belum disimpan',
+        body: '<p style="margin:0;color:var(--ink-2);line-height:1.6">Counter/format yang Anda ubah <b>belum tersimpan</b>, sehingga nomor surat berikutnya masih memakai pengaturan lama. Simpan sekarang?</p>',
+        foot: '<button class="btn btn-ghost" data-tetap>Tetap di sini</button><button class="btn btn-soft" data-buang>Buang perubahan</button><button class="btn btn-primary" data-simpan-lanjut>' + ic('save') + ' Simpan &amp; lanjut</button>',
+        onClose: () => { if (!selesai) resolve(false); }
+      });
+      $('[data-tetap]', m.el).onclick = () => m.close();
+      $('[data-buang]', m.el).onclick = () => { selesai = true; m.close(); this.isi(this.el); resolve(true); };
+      $('[data-simpan-lanjut]', m.el).onclick = async (e) => {
+        const ok = await this.simpan(this.el, e.currentTarget);
+        if (ok) { selesai = true; m.close(); resolve(true); }
+      };
+    });
+  },
   isi(el) {
-    el._filled = 1; this.dirty = false;
+    el._filled = 1;
     ['CUTI', 'MUNDUR'].forEach((j) => {
       const n = S.nomor[j] || {}, card = $('[data-jenis="' + j + '"]', el);
-      $('[data-k="ctr"]', card).value = n.nomor_terakhir || 0;
+      $('[data-k="ctr"]', card).value = ctrEfektif(j, j).n;
       $('[data-k="digit"]', card).value = n.digit || 3;
       $('[data-k="format"]', card).value = n.format || FORMAT_DEF[j];
       $('[data-k="reset"]', card).checked = !!n.reset_tahunan;
       $('[data-upd]', card).textContent = 'Update terakhir: ' + (n.diubah_pada ? fmtTgl(new Date(n.diubah_pada).toISOString().slice(0, 10)) + (n.diubah_oleh ? ' · ' + n.diubah_oleh : '') : '—');
       if (j === 'CUTI') {
         $('#n-mode', el).value = n.mode === 'PER_PRODI' ? 'PER_PRODI' : 'BERSAMA';
-        Object.keys(PRODI).forEach((p) => { $('#n-pp-' + p, el).value = (S.nomor['CUTI_' + p] || {}).nomor_terakhir || 0; });
+        Object.keys(PRODI).forEach((p) => { $('#n-pp-' + p, el).value = ctrEfektif('CUTI_' + p, 'CUTI').n; });
       }
     });
     this.togglePP(el); this.preview(el);
@@ -122,7 +170,12 @@ registerPage('penomoran', {
       return Object.assign({}, r, { _jenis: tag, _jenisTxt: jt, _aksi: aksi, _ctr: ctr });
     });
   },
-  togglePP(el) { const pp = $('[data-perprodi]', el); if (pp) pp.hidden = $('#n-mode', el).value !== 'PER_PRODI'; },
+  togglePP(el) {
+    const per = $('#n-mode', el).value === 'PER_PRODI', pp = $('[data-perprodi]', el);
+    if (pp) pp.hidden = !per;
+    // Mode per prodi: counter utama cuti tidak dipakai → nonaktifkan agar tidak membingungkan
+    $('#n-CUTI-ctr', el).disabled = per;   // keterangan di bawah counter diisi oleh preview()
+  },
   baca(el) {
     const out = {};
     ['CUTI', 'MUNDUR'].forEach((j) => {
@@ -137,10 +190,26 @@ registerPage('penomoran', {
     return out;
   },
   preview(el) {
-    this.dirty = true;
-    const v = this.baca(el), now = todayStr();
+    const v = this.baca(el), now = todayStr(), kotor = this.isDirty();
+    $$('[data-belum]', el).forEach((x) => { x.hidden = !kotor; });
+    const st = $('[data-save-status]', el), bar = $('[data-savebar]', el);
+    bar.classList.toggle('kotor', kotor);
+    st.innerHTML = kotor ? '<span class="dot" style="background:var(--warn-ink)"></span> Ada perubahan yang <b>belum disimpan</b>' : '<span class="dot" style="background:var(--ok-ink)"></span> Semua pengaturan sudah tersimpan';
+    // Sama persis dengan yang akan terbit setelah disimpan: counter yang tidak diubah + reset tahunan dicentang
+    // + counter tercatat tahun lalu → mulai lagi dari 001. Counter yang diubah/disimpan berlaku untuk tahun ini.
+    const y = +now.slice(0, 4);
+    const lanjut = (key, jenis, val, resetLive) => {
+      const e = ctrEfektif(key, jenis), n = +val || 0;
+      return n === e.n && e.n === e.asli && resetLive && e.th && y > e.th ? 0 : n;
+    };
     ['CUTI', 'MUNDUR'].forEach((j) => {
-      const c = v[j], ctr = j === 'CUTI' && c.mode === 'PER_PRODI' ? Math.max(...Object.values(c.per_prodi).map(Number)) : +c.nomor_terakhir;
+      const c = v[j], per = j === 'CUTI' && c.mode === 'PER_PRODI';
+      const ctr = per ? Math.max(...Object.keys(c.per_prodi).map((p) => lanjut('CUTI_' + p, 'CUTI', c.per_prodi[p], c.reset_tahunan)))
+        : lanjut(j, j, c.nomor_terakhir, c.reset_tahunan);
+      const e = ctrEfektif(j, j), hint = $('[data-jenis="' + j + '"] [data-ctr-hint]', el);
+      hint.textContent = per ? 'Mode per prodi aktif — isi counter tiap prodi di bawah.'
+        : e.direset ? 'Tahun baru: counter ' + e.th + ' (' + e.asli + ') direset otomatis. Isi counter lalu Simpan bila ingin melanjutkan.'
+        : 'Nomor berikutnya = counter + 1';
       const txt = formatNomor(c.format, (ctr || 0) + 1, c.digit, '', now);
       const html = esc(txt).replace(/\{KODE_PRODI\}/g, '<span class="v">{KODE_PRODI}</span>').replace('/' + ROMAWI[+now.slice(5, 7)] + '/', '/<span class="v">' + ROMAWI[+now.slice(5, 7)] + '</span>/');
       $('[data-jenis="' + j + '"] [data-prev]', el).innerHTML = '<span>' + html + '</span>' + ic('info');
@@ -160,15 +229,17 @@ registerPage('penomoran', {
     for (const j of ['CUTI', 'MUNDUR']) {
       if (v[j].format.indexOf('{NO}') === -1) { toast('Format ' + (j === 'CUTI' ? 'cuti' : 'mengundurkan diri') + ' wajib memuat {NO}.', 'err'); return; }
     }
-    const turun = ['CUTI', 'MUNDUR'].filter((j) => +v[j].nomor_terakhir < ((S.nomor[j] || {}).nomor_terakhir || 0));
+    const turun = ['CUTI', 'MUNDUR'].filter((j) => +v[j].nomor_terakhir < ctrEfektif(j, j).n);
     if (turun.length && !(await confirmDialog({ title: 'Turunkan counter?', message: 'Counter ' + turun.map((j) => j === 'CUTI' ? 'cuti' : 'mengundurkan diri').join(' & ') + ' akan lebih kecil dari sebelumnya. Nomor yang sudah pernah terbit tetap dilewati otomatis sehingga tidak terjadi nomor ganda.', ok: 'Ya, simpan' }))) return;
     setBusy(btn, true, 'Menyimpan…');
     const res = await api('simpanPenomoran', v);
     setBusy(btn, false);
-    if (!res.success) { toast(res.message, 'err'); return; }
-    S.nomor = res.data.nomor; S.logNomor = res.data.logNomor; this.dirty = false;
+    if (!res.success) { toast(res.message, 'err'); return false; }
+    S.nomor = res.data.nomor; S.logNomor = res.data.logNomor;
+    this.isi(el);
     State.markStale(); State.changed();
     toast(res.message);
+    return true;
   },
   async resetCounter(j, btn) {
     const ok = await confirmDialog({ title: 'Reset counter?', message: 'Counter <b>' + (j === 'CUTI' ? 'Surat Cuti' : 'Surat Mengundurkan Diri') + '</b> akan kembali ke 0 sehingga nomor berikutnya mulai dari 1. Tindakan tercatat di log.', ok: 'Reset Counter', danger: true });
@@ -177,7 +248,8 @@ registerPage('penomoran', {
     const res = await api('resetCounter', { jenis: j });
     setBusy(btn, false);
     if (!res.success) { toast(res.message, 'err'); return; }
-    S.nomor = res.data.nomor; S.logNomor = res.data.logNomor; this.dirty = false;
+    S.nomor = res.data.nomor; S.logNomor = res.data.logNomor;
+    this.isi(this.el);
     State.markStale(); State.changed();
     toast(res.message);
   }
@@ -456,6 +528,7 @@ registerPage('pengguna', {
 const IMPOR_ALIAS = {
   nim: ['nim', 'no induk', 'nomor induk', 'nomor induk mahasiswa', 'npm'],
   nama: ['nama', 'nama lengkap', 'nama mahasiswa', 'nama mhs'],
+  gender: ['gender', 'jenis kelamin', 'jk', 'l p', 'kelamin', 'sex'],
   prodi: ['prodi', 'program studi', 'kode prodi', 'jurusan'],
   kelas: ['kelas', 'program kelas', 'jenis kelas'],
   tahun_masuk: ['tahun masuk', 'angkatan', 'tahun angkatan', 'th masuk', 'tahun'],
@@ -468,16 +541,24 @@ registerPage('impor', {
   admin: true, nav: 'mahasiswa', crumb: ['Data Mahasiswa', 'Impor Excel'],
   template: () => `
     <div class="page-head">
-      <div><h1>Impor Data Mahasiswa</h1><p>Masukkan banyak mahasiswa sekaligus dari Excel. Data diperiksa dulu di pratinjau sebelum disimpan.</p></div>
+      <div><h1>Impor Data Mahasiswa</h1><p>Tambah banyak mahasiswa sekaligus, atau perbarui data yang sudah ada (mis. melengkapi jenis kelamin) dari Excel. Data diperiksa dulu di pratinjau sebelum disimpan.</p></div>
       <div class="head-actions"><a href="#/mahasiswa" class="btn btn-ghost">${ic('arrow-left')} Kembali</a><button class="btn btn-soft" data-act="templat">${ic('download')} Unduh Templat Excel</button></div>
     </div>
     <div class="steps"><span data-step="1" class="on"><i>1</i> Pilih berkas</span><span data-step="2"><i>2</i> Pratinjau &amp; validasi</span><span data-step="3"><i>3</i> Hasil</span></div>
     <div class="card card-pad" data-s1>
+      <div class="field" style="margin-bottom:20px"><span class="lbl-f">Mode impor</span>
+        <div class="seg" role="radiogroup" aria-label="Mode impor"><button type="button" data-mode="tambah" class="on">Tambah mahasiswa baru</button><button type="button" data-mode="perbarui">Perbarui data yang sudah ada (berdasarkan NIM)</button></div>
+        <p class="hint" data-mode-hint style="margin:6px 0 0"></p>
+      </div>
       <label class="drop" for="imp-file" style="padding:44px">${ic('file-spreadsheet')}<div class="t">Klik atau seret berkas Excel ke sini</div><div class="s">.xlsx, .xls, atau .csv · baris pertama berisi judul kolom</div></label>
       <input type="file" id="imp-file" accept=".xlsx,.xls,.csv" hidden>
-      <div class="mt"><div class="mini" style="margin-top:0">Kolom yang dikenali</div>
-        <p class="muted" style="margin:0;line-height:1.7"><b>Wajib:</b> NIM, Nama Lengkap, Prodi (ES/HES/PAI/IAT atau nama lengkap), Kelas (Reguler/Hybrid/Ma'had Aly Ikhwan/Akhwat), Tahun Masuk.<br>
-        <b>Opsional:</b> Status (Aktif/Cuti/Mengundurkan Diri — kosong = Aktif), Tanggal Status, Nomor Surat (untuk data lama), Catatan.</p></div>
+      <div class="mt" data-info-tambah><div class="mini" style="margin-top:0">Kolom yang dikenali</div>
+        <p class="muted" style="margin:0;line-height:1.7"><b>Wajib:</b> NIM, Nama Lengkap, Prodi (ES/HES/PAI/IAT atau nama lengkap), Kelas (Reguler/Hybrid/Ma'had Aly Ikhwan/Ma'had Aly Akhwat/Khusus), Tahun Masuk.<br>
+        <b>Opsional:</b> Jenis Kelamin (L/P), Status (Aktif/Cuti/Mengundurkan Diri — kosong = Aktif), Tanggal Status, Nomor Surat (untuk data lama), Catatan.</p></div>
+      <div class="mt" data-info-perbarui hidden><div class="mini" style="margin-top:0">Cara cepat melengkapi jenis kelamin</div>
+        <ol class="list-plain" style="margin:0"><li>Klik <b>Unduh Data untuk Diperbarui</b> (berisi NIM, nama, jenis kelamin, prodi, kelas, angkatan).</li>
+          <li>Isi kolom <b>Jenis Kelamin</b> dengan L atau P (kolom lain boleh dibiarkan).</li><li>Unggah kembali di sini. Hanya kolom yang terisi dan berbeda yang diperbarui; <b>status tidak diubah</b>.</li></ol>
+        <button class="btn btn-soft btn-sm mt-s" data-act="unduh-perbarui">${ic('download')} Unduh Data untuk Diperbarui</button></div>
     </div>
     <div data-s2 hidden>
       <div class="stat-mini" data-stat></div>
@@ -486,7 +567,7 @@ registerPage('impor', {
           <div><b data-fname></b><div class="muted" style="font-size:13.5px">Baris bermasalah dapat diperbaiki langsung di tabel atau dilewati (hapus centang).</div></div>
           <label class="switch"><input type="checkbox" data-hanya-err><span class="tr"></span><span>Hanya tampilkan yang bermasalah</span></label>
         </div>
-        <div class="tbl-wrap"><table class="tbl compact"><thead><tr><th>Ikut</th><th>Baris</th><th>NIM</th><th>Nama Lengkap</th><th>Prodi</th><th>Kelas</th><th>Tahun</th><th>Status</th><th>Nomor Surat</th><th>Keterangan</th></tr></thead><tbody data-prev></tbody></table></div>
+        <div class="tbl-wrap"><table class="tbl compact"><thead data-prev-head></thead><tbody data-prev></tbody></table></div>
         <div class="tbl-foot"><div class="info" data-pinfo></div><div class="pager" data-ppager></div></div>
       </div>
       <div class="progress mt" data-prog hidden><i></i></div>
@@ -498,7 +579,8 @@ registerPage('impor', {
     <div class="card card-pad" data-s3 hidden></div>`,
   mount(el) {
     const self = this;
-    this.rows = []; this.page = 1;
+    this.rows = []; this.page = 1; this.mode = 'tambah';
+    this.setMode(el, 'tambah');
     $('#imp-file', el).addEventListener('change', (e) => { if (e.target.files[0]) self.baca(el, e.target.files[0]); e.target.value = ''; });
     const drop = $('.drop', el);
     drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag'); });
@@ -506,9 +588,12 @@ registerPage('impor', {
     drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('drag'); if (e.dataTransfer.files[0]) self.baca(el, e.dataTransfer.files[0]); });
     $('[data-hanya-err]', el).addEventListener('change', () => { self.page = 1; self.renderPrev(el); });
     el.addEventListener('click', (e) => {
+      const md = e.target.closest('[data-mode]');
+      if (md) { self.setMode(el, md.dataset.mode); return; }
       const b = e.target.closest('[data-act]');
       if (b) {
         if (b.dataset.act === 'templat') self.templat(b);
+        if (b.dataset.act === 'unduh-perbarui') self.unduhPerbarui(b);
         if (b.dataset.act === 'ulang') self.step(el, 1);
         if (b.dataset.act === 'kirim') self.kirim(el, b);
         if (b.dataset.act === 'laporan') self.laporan();
@@ -523,6 +608,24 @@ registerPage('impor', {
     idle(() => loadXLSX().catch(() => {}), 800);   // siapkan pustaka Excel
   },
   show() {},
+  setMode(el, m) {
+    this.mode = m;
+    $$('[data-mode]', el).forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
+    $('[data-info-tambah]', el).hidden = m !== 'tambah';
+    $('[data-info-perbarui]', el).hidden = m !== 'perbarui';
+    $('[data-mode-hint]', el).textContent = m === 'tambah' ? 'NIM yang sudah terdaftar akan ditandai dan dilewati.' : 'Mencocokkan NIM yang sudah ada lalu memperbarui nama, jenis kelamin, prodi, kelas, angkatan, atau catatan.';
+  },
+  async unduhPerbarui(btn) {
+    setBusy(btn, true, 'Menyiapkan…');
+    try {
+      const rows = S.mhs.slice().sort((a, b) => (a.gender ? 1 : 0) - (b.gender ? 1 : 0) || String(a.nim).localeCompare(String(b.nim)));
+      await exportXlsx('Perbarui_Data_Mahasiswa_' + stampFile() + '.xlsx', 'Perbarui',
+        ['NIM', 'Nama Lengkap', 'Jenis Kelamin', 'Prodi', 'Kelas', 'Tahun Masuk', 'Catatan'],
+        rows.map((m) => [m.nim, m.nama, m.gender || '', m.prodi, m.kelas, m.tahun_masuk, m.catatan || '']), [13, 32, 14, 7, 20, 12, 30]);
+      toast('Isi kolom Jenis Kelamin (L/P), lalu unggah kembali dengan mode Perbarui. Baris tanpa jenis kelamin ada di urutan atas.', 'info');
+    } catch (e) { toast(e.message, 'err'); }
+    setBusy(btn, false);
+  },
   step(el, n) {
     $$('[data-step]', el).forEach((s) => s.classList.toggle('on', +s.dataset.step === n));
     $('[data-s1]', el).hidden = n !== 1; $('[data-s2]', el).hidden = n !== 2; $('[data-s3]', el).hidden = n !== 3;
@@ -533,12 +636,12 @@ registerPage('impor', {
       const X = await loadXLSX();
       const wb = X.utils.book_new();
       const ws = X.utils.aoa_to_sheet([
-        ['NIM', 'Nama Lengkap', 'Prodi', 'Kelas', 'Tahun Masuk', 'Status', 'Tanggal Status', 'Nomor Surat', 'Catatan'],
-        ['202501001', 'Contoh Nama Mahasiswa', 'ES', 'Reguler', 2025, 'Aktif', '', '', ''],
-        ['202401017', 'Contoh Mahasiswa Cuti', 'HES', 'Hybrid', 2024, 'Cuti', '2025-09-15', '045.C/HES/STIS-AL-WAFA/IX/2025', 'Data lama']
+        ['NIM', 'Nama Lengkap', 'Jenis Kelamin', 'Prodi', 'Kelas', 'Tahun Masuk', 'Status', 'Tanggal Status', 'Nomor Surat', 'Catatan'],
+        ['202501001', 'Contoh Nama Mahasiswa', 'L', 'ES', 'Reguler', 2025, 'Aktif', '', '', ''],
+        ['202401017', 'Contoh Mahasiswa Cuti', 'P', 'HES', 'Khusus', 2024, 'Cuti', '2025-09-15', '045.C/HES/STIS-AL-WAFA/IX/2025', 'Data lama']
       ]);
-      ws['!cols'] = [13, 30, 8, 20, 12, 18, 15, 34, 24].map((w) => ({ wch: w }));
-      const pt = X.utils.aoa_to_sheet([['Kolom', 'Nilai yang diterima'], ['Prodi', 'ES, HES, PAI, IAT (atau nama lengkap prodi)'], ['Kelas', "Reguler, Hybrid, Ma'had Aly Ikhwan, Ma'had Aly Akhwat"], ['Status', 'Aktif, Cuti, Mengundurkan Diri (kosong = Aktif)'], ['Tanggal Status', 'yyyy-mm-dd atau dd/mm/yyyy'], ['Catatan', 'Berkas surat untuk data lama diunggah dari menu Ubah Data setelah impor']]);
+      ws['!cols'] = [13, 30, 14, 8, 20, 12, 18, 15, 34, 24].map((w) => ({ wch: w }));
+      const pt = X.utils.aoa_to_sheet([['Kolom', 'Nilai yang diterima'], ['Jenis Kelamin', 'L (laki-laki) atau P (perempuan). Ma\'had Aly Ikhwan otomatis L, Akhwat otomatis P'], ['Prodi', 'ES, HES, PAI, IAT (atau nama lengkap prodi)'], ['Kelas', "Reguler, Hybrid, Ma'had Aly Ikhwan, Ma'had Aly Akhwat, Khusus"], ['Status', 'Aktif, Cuti, Mengundurkan Diri (kosong = Aktif)'], ['Tanggal Status', 'yyyy-mm-dd atau dd/mm/yyyy'], ['Catatan', 'Berkas surat untuk data lama diunggah dari menu Ubah Data setelah impor']]);
       pt['!cols'] = [{ wch: 16 }, { wch: 70 }];
       X.utils.book_append_sheet(wb, ws, 'Mahasiswa');
       X.utils.book_append_sheet(wb, pt, 'Petunjuk');
@@ -564,7 +667,9 @@ registerPage('impor', {
         const o = { baris: hi + i + 2, ikut: true };
         Object.keys(IMPOR_ALIAS).forEach((f) => { const v = map[f] !== undefined ? r[map[f]] : ''; o[f] = v instanceof Date ? normTgl(v) : String(v === null || v === undefined ? '' : v).trim(); });
         o.prodi = normProdi(o.prodi) || o.prodi; o.kelas = normKelas(o.kelas) || o.kelas;
-        o.status = o.status ? (normStatus(o.status) || o.status) : 'Aktif';
+        o.gender = normGender(o.gender) || o.gender;
+        if (this.mode === 'tambah' && !o.gender) o.gender = genderDariKelas(o.kelas);
+        o.status = o.status ? (normStatus(o.status) || o.status) : (this.mode === 'tambah' ? 'Aktif' : '');
         if (o.tanggal_status) o.tanggal_status = normTgl(isNaN(+o.tanggal_status) ? o.tanggal_status : +o.tanggal_status) || o.tanggal_status;
         return o;
       }).filter((o) => o.nim || o.nama);
@@ -576,6 +681,7 @@ registerPage('impor', {
     } catch (e) { toast(e.message, 'err', 'Berkas tidak bisa dibaca'); }
   },
   validasiSatu(o, nimFile) {
+    if (this.mode === 'perbarui') return this.validasiPerbarui(o, nimFile);
     const e = [], maxTh = new Date().getFullYear() + 1;
     if (!o.nim) e.push('NIM kosong'); else if (!/^[0-9A-Za-z.\-/]{4,24}$/.test(o.nim)) e.push('format NIM');
     else if (S.mhs.some((m) => m.nim === o.nim)) e.push('NIM sudah terdaftar');
@@ -587,7 +693,31 @@ registerPage('impor', {
     if (!th) e.push('tahun masuk kosong'); else if (th < 1990 || th > maxTh) e.push('tahun tidak wajar');
     if (!STATUS.includes(o.status)) e.push('status tidak dikenal');
     if (o.tanggal_status && !normTgl(o.tanggal_status)) e.push('tanggal tidak valid');
+    if (o.gender && !GENDER[o.gender]) e.push('jenis kelamin tidak dikenal');
+    else if (o.gender && genderDariKelas(o.kelas) && genderDariKelas(o.kelas) !== o.gender) e.push(o.kelas + ' khusus ' + (genderDariKelas(o.kelas) === 'L' ? 'L' : 'P'));
     o.err = e;
+  },
+  /** Mode perbarui: NIM harus ada; hanya kolom terisi yang dibandingkan */
+  validasiPerbarui(o, nimFile) {
+    const e = [], m = S.mhs.find((x) => x.nim === o.nim), maxTh = new Date().getFullYear() + 1;
+    o.ubah = [];
+    if (!o.nim) e.push('NIM kosong');
+    else if (!m) e.push('NIM tidak ditemukan');
+    else if (nimFile[o.nim] > 1) e.push('NIM ganda di berkas');
+    if (o.prodi && !PRODI[o.prodi]) e.push('prodi tidak dikenal');
+    if (o.kelas && !KELAS.includes(o.kelas)) e.push('kelas tidak dikenal');
+    if (o.gender && !GENDER[o.gender]) e.push('jenis kelamin tidak dikenal');
+    const th = parseInt(o.tahun_masuk, 10);
+    if (o.tahun_masuk && (!th || th < 1990 || th > maxTh)) e.push('tahun tidak wajar');
+    if (m && !e.length) {
+      const kelasAkhir = o.kelas || m.kelas, genderAkhir = o.gender || m.gender || genderDariKelas(kelasAkhir);
+      if (genderAkhir && genderDariKelas(kelasAkhir) && genderDariKelas(kelasAkhir) !== genderAkhir) e.push(kelasAkhir + ' khusus ' + genderDariKelas(kelasAkhir));
+      [['nama', 'nama'], ['gender', 'gender'], ['prodi', 'prodi'], ['kelas', 'kelas'], ['tahun_masuk', 'angkatan'], ['catatan', 'catatan']].forEach(([k, lbl]) => {
+        if (o[k] !== '' && o[k] !== undefined && String(o[k]) !== String(m[k] || '')) o.ubah.push(lbl + ': ' + (m[k] || '—') + ' → ' + o[k]);
+      });
+    }
+    o.err = e;
+    o.sama = !e.length && !o.ubah.length;
   },
   validasiSemua() {
     const cnt = {};
@@ -607,26 +737,38 @@ registerPage('impor', {
     if (this.page > pages) this.page = pages;
     const view = idx.slice((this.page - 1) * per, this.page * per);
     const sel = (k, val, opts) => '<select class="input" data-k="' + k + '">' + (opts.includes(val) ? '' : '<option value="' + esc(val) + '" selected>' + esc(val || '—') + '</option>') + opts.map((x) => '<option' + (x === val ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select>';
+    const perbarui = this.mode === 'perbarui';
+    $('[data-prev-head]', el).innerHTML = perbarui
+      ? '<tr><th>Ikut</th><th>Baris</th><th>NIM</th><th>Nama Lengkap</th><th>Gender</th><th>Prodi</th><th>Kelas</th><th>Tahun</th><th>Perubahan / Keterangan</th></tr>'
+      : '<tr><th>Ikut</th><th>Baris</th><th>NIM</th><th>Nama Lengkap</th><th>Gender</th><th>Prodi</th><th>Kelas</th><th>Tahun</th><th>Status</th><th>Nomor Surat</th><th>Keterangan</th></tr>';
+    const selG = (val) => '<select class="input" data-k="gender"><option value=""' + (val ? '' : ' selected') + '>—</option><option value="L"' + (val === 'L' ? ' selected' : '') + '>L</option><option value="P"' + (val === 'P' ? ' selected' : '') + '>P</option>' + (val && !GENDER[val] ? '<option selected>' + esc(val) + '</option>' : '') + '</select>';
     const html = view.map((i) => {
       const o = this.rows[i], bad = o.err.length && o.ikut;
       const inp = (k, w) => '<input class="input' + (k === 'nim' ? ' mono' : '') + '" data-k="' + k + '" value="' + esc(o[k]) + '" style="min-width:' + w + 'px">';
-      return '<tr data-i="' + i + '" class="' + (bad ? 'row-err' : '') + (o.ikut ? '' : ' row-skip') + '"><td><input type="checkbox" data-k="ikut"' + (o.ikut ? ' checked' : '') + ' aria-label="Ikut diimpor"></td><td class="muted">' + o.baris + '</td>' +
-        (o.err.length ? '<td>' + inp('nim', 110) + '</td><td>' + inp('nama', 170) + '</td><td>' + sel('prodi', o.prodi, Object.keys(PRODI)) + '</td><td>' + sel('kelas', o.kelas, KELAS) + '</td><td>' + inp('tahun_masuk', 70) + '</td><td>' + sel('status', o.status, STATUS) + '</td><td>' + inp('nomor_surat', 150) + '</td>'
-          : '<td class="nim">' + esc(o.nim) + '</td><td class="nama">' + esc(o.nama) + '</td><td>' + chipProdi(o.prodi) + '</td><td>' + esc(o.kelas) + '</td><td>' + esc(o.tahun_masuk) + '</td><td>' + chipStatus(o.status) + '</td><td class="no-surat">' + esc(o.nomor_surat || '—') + '</td>') +
-        '<td>' + (o.err.length ? '<span class="reason">' + esc(o.err.join(', ')) + '</span>' : '<span style="color:var(--ok-ink)">' + ic('check') + ' Siap</span>') + '</td></tr>';
+      const ket = o.err.length ? '<span class="reason">' + esc(o.err.join(', ')) + '</span>'
+        : perbarui ? (o.sama ? '<span class="muted">Tidak ada perubahan</span>' : '<span style="color:var(--ok-ink)">' + ic('check') + ' ' + esc(o.ubah.join(' · ')) + '</span>')
+        : '<span style="color:var(--ok-ink)">' + ic('check') + ' Siap</span>' + (o.gender ? '' : ' <span class="muted">(tanpa gender)</span>');
+      const edit = o.err.length || perbarui;
+      return '<tr data-i="' + i + '" class="' + (bad ? 'row-err' : '') + (o.ikut ? '' : ' row-skip') + '"><td><input type="checkbox" data-k="ikut"' + (o.ikut ? ' checked' : '') + ' aria-label="Ikut diproses"></td><td class="muted">' + o.baris + '</td>' +
+        (perbarui
+          ? '<td class="nim">' + esc(o.nim) + '</td><td class="nama">' + esc(o.nama || (S.mhs.find((m) => m.nim === o.nim) || {}).nama || '') + '</td><td>' + selG(o.gender) + '</td><td>' + (o.prodi ? chipProdi(o.prodi) : '<span class="muted">—</span>') + '</td><td>' + esc(o.kelas || '—') + '</td><td>' + esc(o.tahun_masuk || '—') + '</td>'
+          : edit ? '<td>' + inp('nim', 110) + '</td><td>' + inp('nama', 170) + '</td><td>' + selG(o.gender) + '</td><td>' + sel('prodi', o.prodi, Object.keys(PRODI)) + '</td><td>' + sel('kelas', o.kelas, KELAS) + '</td><td>' + inp('tahun_masuk', 70) + '</td><td>' + sel('status', o.status, STATUS) + '</td><td>' + inp('nomor_surat', 150) + '</td>'
+          : '<td class="nim">' + esc(o.nim) + '</td><td class="nama">' + esc(o.nama) + '</td><td>' + chipGender(o.gender) + '</td><td>' + chipProdi(o.prodi) + '</td><td>' + esc(o.kelas) + '</td><td>' + esc(o.tahun_masuk) + '</td><td>' + chipStatus(o.status) + '</td><td class="no-surat">' + esc(o.nomor_surat || '—') + '</td>') +
+        '<td>' + ket + '</td></tr>';
     }).join('');
     const tb = $('[data-prev]', el);
     const act = keepFocus && document.activeElement && tb.contains(document.activeElement) ? [document.activeElement.closest('tr').dataset.i, document.activeElement.dataset.k] : null;
-    tb.innerHTML = html || '<tr><td colspan="10"><div class="empty">' + ic('circle-check') + 'Tidak ada baris bermasalah.</div></td></tr>';
+    tb.innerHTML = html || '<tr><td colspan="11"><div class="empty">' + ic('circle-check') + 'Tidak ada baris bermasalah.</div></td></tr>';
     if (act) { const f = tb.querySelector('tr[data-i="' + act[0] + '"] [data-k="' + act[1] + '"]'); if (f) f.focus(); }
     $('[data-pinfo]', el).textContent = 'Halaman ' + this.page + ' dari ' + pages + ' · ' + fmtNum(idx.length) + ' baris';
     $('[data-ppager]', el).innerHTML = '<button data-pg="' + (this.page - 1) + '"' + (this.page <= 1 ? ' disabled' : '') + ' aria-label="Sebelumnya">' + ic('chevron-left') + '</button><button class="cur">' + this.page + '</button><button data-pg="' + (this.page + 1) + '"' + (this.page >= pages ? ' disabled' : '') + ' aria-label="Berikutnya">' + ic('chevron-right') + '</button>';
-    const valid = this.rows.filter((o) => o.ikut && !o.err.length).length, bermasalah = this.rows.filter((o) => o.ikut && o.err.length).length, lewati = this.rows.filter((o) => !o.ikut).length;
-    $('[data-stat]', el).innerHTML = `<div><b>${fmtNum(this.rows.length)}</b><span>Total baris</span></div><div><b style="color:var(--ok-ink)">${fmtNum(valid)}</b><span>Siap diimpor</span></div><div><b style="color:var(--bad-ink)">${fmtNum(bermasalah)}</b><span>Bermasalah</span></div><div><b>${fmtNum(lewati)}</b><span>Dilewati</span></div>`;
-    $('[data-kirim-lbl]', el).textContent = 'Impor ' + fmtNum(valid) + ' baris valid';
+    const valid = this.rows.filter((o) => o.ikut && !o.err.length && !o.sama).length, bermasalah = this.rows.filter((o) => o.ikut && o.err.length).length, lewati = this.rows.filter((o) => !o.ikut || o.sama).length;
+    $('[data-stat]', el).innerHTML = `<div><b>${fmtNum(this.rows.length)}</b><span>Total baris</span></div><div><b style="color:var(--ok-ink)">${fmtNum(valid)}</b><span>${perbarui ? 'Akan diperbarui' : 'Siap diimpor'}</span></div><div><b style="color:var(--bad-ink)">${fmtNum(bermasalah)}</b><span>Bermasalah</span></div><div><b>${fmtNum(lewati)}</b><span>${perbarui ? 'Dilewati / tanpa perubahan' : 'Dilewati'}</span></div>`;
+    $('[data-kirim-lbl]', el).textContent = (perbarui ? 'Perbarui ' : 'Impor ') + fmtNum(valid) + ' baris';
     $('[data-act="kirim"]', el).disabled = !valid;
   },
   async kirim(el, btn) {
+    if (this.mode === 'perbarui') return this.kirimPerbarui(el, btn);
     const siap = this.rows.filter((o) => o.ikut && !o.err.length);
     const masalah = this.rows.filter((o) => o.ikut && o.err.length).length;
     if (masalah && !(await confirmDialog({ title: 'Lewati baris bermasalah?', message: fmtNum(masalah) + ' baris bermasalah akan dilewati. ' + fmtNum(siap.length) + ' baris valid akan diimpor.', ok: 'Lanjutkan Impor' }))) return;
@@ -635,7 +777,7 @@ registerPage('impor', {
     const hasil = { berhasil: [], gagal: [], counter: [] };
     const CH = 200;
     for (let i = 0; i < siap.length; i += CH) {
-      const part = siap.slice(i, i + CH).map((o) => ({ baris: o.baris, nim: o.nim, nama: o.nama, prodi: o.prodi, kelas: o.kelas, tahun_masuk: o.tahun_masuk, status: o.status, tanggal_status: o.tanggal_status, nomor_surat: o.nomor_surat, catatan: o.catatan }));
+      const part = siap.slice(i, i + CH).map((o) => ({ baris: o.baris, nim: o.nim, nama: o.nama, gender: o.gender, prodi: o.prodi, kelas: o.kelas, tahun_masuk: o.tahun_masuk, status: o.status, tanggal_status: o.tanggal_status, nomor_surat: o.nomor_surat, catatan: o.catatan }));
       const res = await api('imporMahasiswa', { rows: part });
       if (!res.success) { part.forEach((p) => hasil.gagal.push({ baris: p.baris, nim: p.nim, alasan: res.message })); }
       else {
@@ -662,6 +804,42 @@ registerPage('impor', {
     this.step(el, 3);
     toast(fmtNum(hasil.berhasil.length) + ' mahasiswa berhasil diimpor.');
   },
+  async kirimPerbarui(el, btn) {
+    const siap = this.rows.filter((o) => o.ikut && !o.err.length && !o.sama);
+    const masalah = this.rows.filter((o) => o.ikut && o.err.length).length;
+    if (masalah && !(await confirmDialog({ title: 'Lewati baris bermasalah?', message: fmtNum(masalah) + ' baris bermasalah akan dilewati. ' + fmtNum(siap.length) + ' data akan diperbarui.', ok: 'Lanjutkan' }))) return;
+    setBusy(btn, true, 'Memperbarui…');
+    const prog = $('[data-prog]', el), bar = prog.querySelector('i'); prog.hidden = false; bar.style.width = '0';
+    const hasil = { diperbarui: [], gagal: [], sama: 0 }, CH = 200;
+    for (let i = 0; i < siap.length; i += CH) {
+      const part = siap.slice(i, i + CH).map((o) => {
+        const r = { baris: o.baris, nim: o.nim };
+        ['nama', 'gender', 'prodi', 'kelas', 'tahun_masuk', 'catatan'].forEach((k) => { if (o[k] !== '' && o[k] !== undefined) r[k] = o[k]; });
+        return r;
+      });
+      const res = await api('perbaruiMassal', { rows: part });
+      if (!res.success) part.forEach((p) => hasil.gagal.push({ baris: p.baris, nim: p.nim, alasan: res.message }));
+      else {
+        res.data.diperbarui.forEach((m) => State.upsertMhs(m));
+        hasil.diperbarui.push(...res.data.diperbarui); hasil.gagal.push(...res.data.gagal); hasil.sama += res.data.sama || 0;
+        State.changed();
+      }
+      bar.style.width = Math.round(Math.min(1, (i + CH) / siap.length) * 100) + '%';
+    }
+    State.markStale();
+    setBusy(btn, false); prog.hidden = true;
+    this.hasil = { berhasil: hasil.diperbarui, gagal: hasil.gagal };
+    const s3 = $('[data-s3]', el);
+    s3.innerHTML = `<div style="display:flex;gap:16px;align-items:center;margin-bottom:22px"><div class="icon-tile ${hasil.gagal.length ? 'gold' : 'sek'}">${ic(hasil.gagal.length ? 'triangle-alert' : 'circle-check')}</div>
+      <div><h2 class="section">Pembaruan selesai</h2><p class="section-sub">${esc(this.file)}</p></div></div>
+      <div class="stat-mini"><div><b style="color:var(--ok-ink)">${fmtNum(hasil.diperbarui.length)}</b><span>Data diperbarui</span></div><div><b style="color:var(--bad-ink)">${fmtNum(hasil.gagal.length)}</b><span>Gagal di server</span></div>
+      <div><b>${fmtNum(masalah)}</b><span>Dilewati (bermasalah)</span></div><div><b>${fmtNum(this.rows.filter((o) => o.sama).length + hasil.sama)}</b><span>Tanpa perubahan</span></div></div>
+      ${hasil.gagal.length ? `<div class="mt"><div class="mini">Baris gagal</div><ul class="warn-list">${hasil.gagal.slice(0, 50).map((g) => `<li>Baris ${g.baris} · <span class="mono">${esc(g.nim)}</span> — ${esc(g.alasan)}</li>`).join('')}</ul></div>` : ''}
+      <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:26px;flex-wrap:wrap">${hasil.gagal.length || masalah ? `<button class="btn btn-soft" data-act="laporan">${ic('download')} Unduh Laporan Gagal</button>` : ''}
+      <button class="btn btn-ghost" data-act="ulang">Proses berkas lain</button><a class="btn btn-primary" href="#/dashboard">${ic('layout-dashboard')} Lihat Dashboard</a></div>`;
+    this.step(el, 3);
+    toast(fmtNum(hasil.diperbarui.length) + ' data mahasiswa diperbarui.');
+  },
   laporan() {
     const bad = this.rows.filter((o) => o.ikut && o.err.length).map((o) => [o.baris, o.nim, o.nama, o.err.join(', ')]).concat(this.hasil.gagal.map((g) => [g.baris, g.nim, '', g.alasan]));
     exportXlsx('Laporan_Impor_Gagal_' + stampFile() + '.xlsx', 'Gagal', ['Baris', 'NIM', 'Nama', 'Alasan'], bad, [8, 14, 30, 60]).catch((e) => toast(e.message, 'err'));
@@ -672,7 +850,7 @@ registerPage('impor', {
 // MIGRASI DATABASE (gas-migrasi-database)
 // =====================================================================
 const PERAN_SHEET = ['Mahasiswa', 'Riwayat', 'Penomoran', 'Pengguna', 'Pengaturan', 'Log', 'Abaikan'];
-const LABEL_FIELD = { nim: 'NIM', nama: 'Nama', prodi: 'Prodi', kelas: 'Kelas', tahun_masuk: 'Tahun Masuk', status: 'Status', tanggal_status: 'Tanggal Status', nomor_surat: 'Nomor Surat', id_berkas: 'ID Berkas', link_berkas: 'Link Berkas', catatan: 'Catatan', id: 'ID' };
+const LABEL_FIELD = { nim: 'NIM', nama: 'Nama', gender: 'Jenis Kelamin', prodi: 'Prodi', kelas: 'Kelas', tahun_masuk: 'Tahun Masuk', status: 'Status', tanggal_status: 'Tanggal Status', nomor_surat: 'Nomor Surat', id_berkas: 'ID Berkas', link_berkas: 'Link Berkas', catatan: 'Catatan', id: 'ID' };
 registerPage('migrasi', {
   admin: true, crumb: ['Pengaturan', 'Migrasi Data'],
   template: () => `

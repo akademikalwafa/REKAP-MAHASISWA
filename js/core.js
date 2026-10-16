@@ -32,9 +32,12 @@ function hydrateIcons(root) {
 
 // ---------------------------------------------------------------- Data acuan (PRD)
 const PRODI = { ES: 'Ekonomi Syariah', HES: 'Hukum Ekonomi Syariah', PAI: 'Pendidikan Agama Islam', IAT: "Ilmu Al Qur'an & Tafsir" };
-const KELAS = ['Reguler', 'Hybrid', "Ma'had Aly Ikhwan", "Ma'had Aly Akhwat"];
-const KELAS_LABEL = { 'Reguler': 'Kelas Reguler', 'Hybrid': 'Kelas Hybrid', "Ma'had Aly Ikhwan": "Ma'had Aly (Ikhwan)", "Ma'had Aly Akhwat": "Ma'had Aly (Akhwat)" };
-const KELAS_PENDEK = { 'Reguler': 'Reguler', 'Hybrid': 'Hybrid', "Ma'had Aly Ikhwan": 'Ikhwan', "Ma'had Aly Akhwat": 'Akhwat' };
+const KELAS = ['Reguler', 'Hybrid', "Ma'had Aly Ikhwan", "Ma'had Aly Akhwat", 'Khusus'];
+const KELAS_LABEL = { 'Reguler': 'Kelas Reguler', 'Hybrid': 'Kelas Hybrid', "Ma'had Aly Ikhwan": "Ma'had Aly (Ikhwan)", "Ma'had Aly Akhwat": "Ma'had Aly (Akhwat)", 'Khusus': 'Kelas Khusus' };
+const KELAS_PENDEK = { 'Reguler': 'Reguler', 'Hybrid': 'Hybrid', "Ma'had Aly Ikhwan": 'Ikhwan', "Ma'had Aly Akhwat": 'Akhwat', 'Khusus': 'Khusus' };
+const GENDER = { L: 'Laki-laki', P: 'Perempuan' };
+/** Ma'had Aly Ikhwan = putra, Ma'had Aly Akhwat = putri (kelas lain tidak menentukan). */
+const genderDariKelas = (k) => (k === "Ma'had Aly Ikhwan" ? 'L' : k === "Ma'had Aly Akhwat" ? 'P' : '');
 const STATUS = ['Aktif', 'Cuti', 'Mengundurkan Diri'];
 const JENIS = { 'Cuti': 'CUTI', 'Mengundurkan Diri': 'MUNDUR' };
 const ROMAWI = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
@@ -54,11 +57,19 @@ function normProdi(v) {
 function normKelas(v) {
   const s = huruf(v);
   if (!s) return '';
+  if (s.includes('khusus')) return 'Khusus';
   if (/(hybrid|hibrid|hybird)/.test(s)) return 'Hybrid';
   if (/(reguler|regular)/.test(s) || s === 'reg') return 'Reguler';
   const mahad = /(mahad|ma had|aly|ali)/.test(s);
   if (s.includes('akhwat') || (mahad && /(putri|perempuan|wanita)/.test(s))) return "Ma'had Aly Akhwat";
   if (s.includes('ikhwan') || (mahad && /(putra|laki)/.test(s))) return "Ma'had Aly Ikhwan";
+  return '';
+}
+function normGender(v) {
+  const s = huruf(v);
+  if (!s) return '';
+  if (/^(l|lk|laki|laki laki|pria|putra|ikhwan|male|m)$/.test(s) || s.indexOf('laki') === 0) return 'L';
+  if (/^(p|pr|perempuan|wanita|putri|akhwat|female|f|w)$/.test(s) || s.indexOf('perempuan') === 0) return 'P';
   return '';
 }
 function normStatus(v) {
@@ -113,6 +124,7 @@ function fmtUkuran(b) { return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : 
 const nomorHtml = (s) => s ? esc(s).replace(/\//g, '/<wbr>') : '—';
 function kelasHtml(k) { return String(k || '').indexOf("Ma'had") === 0 ? '<span class="kls"><small>Ma\'had Aly</small>' + esc(KELAS_PENDEK[k] || k) + '</span>' : esc(k || '—'); }
 // Chip
+const chipGender = (g) => g ? '<span class="chip g-' + g + '" title="' + GENDER[g] + '">' + g + '</span>' : '<span class="muted" title="Belum diisi">—</span>';
 const chipProdi = (p) => '<span class="chip ' + esc(p) + '" title="' + esc(PRODI[p] || p) + '">' + esc(p || '—') + '</span>';
 function chipStatus(s, kembali) {
   if (kembali) return '<span class="chip s-kembali">Aktif Kembali</span>';
@@ -320,6 +332,15 @@ function route() {
   if (!Pages[name]) { name = 'dashboard'; param = ''; }
   const def = Pages[name];
   if (def.admin && !isAdmin()) { toast('Halaman ini khusus Admin.', 'info'); name = 'dashboard'; param = ''; }
+  // Halaman dengan perubahan belum disimpan → tanya dulu sebelum pindah
+  const asal = Pages[currentPage];
+  if (asal && currentPage !== name && asal.isDirty && !asal._lewati && asal.isDirty()) {
+    const tujuan = location.hash;
+    history.replaceState(null, '', '#/' + currentPage);
+    asal.beforeLeave().then((lanjut) => { if (lanjut) { asal._lewati = true; location.hash = tujuan; } });
+    return;
+  }
+  if (asal) asal._lewati = false;
   const host = $('#content');
   let el = host.querySelector('.page[data-page="' + name + '"]');
   const baru = !el;
@@ -598,3 +619,9 @@ async function lihatBerkas(id, judul) {
     '<span style="display:flex;gap:10px"><a class="btn btn-soft btn-sm" href="' + f.url + '" download="' + esc(f.nama) + '">' + ic('download') + ' Unduh</a>' +
     (isAdmin() ? '<a class="btn btn-ghost btn-sm" href="https://drive.google.com/file/d/' + esc(id) + '/view" target="_blank" rel="noopener">' + ic('external-link') + ' Buka di Drive</a>' : '') + '</span></div>';
 }
+
+// Tutup tab / muat ulang saat ada perubahan belum disimpan → browser meminta konfirmasi
+window.addEventListener('beforeunload', (e) => {
+  const p = Pages[currentPage];
+  if (p && p.isDirty && p.isDirty()) { e.preventDefault(); e.returnValue = ''; }
+});

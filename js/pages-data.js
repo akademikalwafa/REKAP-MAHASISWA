@@ -19,19 +19,79 @@ function hitungStatus(list) {
 function mhsOfRiwayat(r) { return S.byId.get(r.mahasiswa_id) || S.mhs.find((m) => m.nim === r.nim) || null; }
 
 // =====================================================================
-// DASHBOARD
+// DASHBOARD (v1.1) — 4 kartu, filter cepat prodi, 4 grafik, 3 tabel rekap L/P
+// Semua dihitung LOKAL dari data perangkat → filter & render instan tanpa server.
 // =====================================================================
+const PRODI_KEYS = Object.keys(PRODI);
+function semesterLabel() {
+  const t = todayStr(), m = +t.slice(5, 7), mulai = CFG.TA_MULAI_BULAN || 8;
+  return 'Semester ' + (((m - mulai + 12) % 12) < 6 ? 'Ganjil' : 'Genap') + ' ' + tahunAkademik(t);
+}
+/** Hitung L / P / Total (+ jumlah tanpa gender) */
+function hitLP(list) {
+  const o = { L: 0, P: 0, T: list.length, X: 0 };
+  list.forEach((m) => { if (m.gender === 'L') o.L++; else if (m.gender === 'P') o.P++; else o.X++; });
+  return o;
+}
+function donutSvg(seg, total, atas, bawah, label) {
+  const R = 62, C = 2 * Math.PI * R, parts = seg.filter((s) => s.n > 0);
+  let off = 0;
+  const arcs = parts.map((s) => {
+    const len = total ? (s.n / total) * C : 0, gap = parts.length > 1 ? Math.min(2.5, len / 2) : 0;
+    const a = `<circle r="${R}" cx="80" cy="80" fill="none" stroke="${s.c}" stroke-width="24" stroke-dasharray="${Math.max(0, len - gap)} ${C}" stroke-dashoffset="${-off}" transform="rotate(-90 80 80)"><title>${esc(s.k)}: ${fmtNum(s.n)} (${fmtPct(total ? (s.n / total) * 100 : 0)})</title></circle>`;
+    off += len; return a;
+  }).join('');
+  return `<div class="donut-wrap"><svg class="donut" viewBox="0 0 160 160" role="img" aria-label="${esc(label)}">
+      <circle r="${R}" cx="80" cy="80" fill="none" stroke="var(--line)" stroke-width="24"/>${arcs}
+      <text x="80" y="76" text-anchor="middle" font-size="20" font-weight="800">${atas}</text>
+      <text x="80" y="96" text-anchor="middle" font-size="11" style="fill:var(--ink-2)">${bawah}</text></svg></div>
+    <ul class="legend-list">${seg.filter((s) => s.n > 0 || s.selalu).map((s) => `<li data-tip="${esc(s.k)}: ${fmtNum(s.n)}"><i class="dot" style="background:${s.c}"></i><span>${esc(s.k)}</span><b>${fmtNum(s.n)}</b><em>${fmtPct(total ? (s.n / total) * 100 : 0)}</em></li>`).join('')}</ul>`;
+}
+/** Tabel silang bertingkat: baris × kelompok kolom, tiap kelompok L | P | Total, plus baris Total. */
+function xtab(o) {
+  // o: {judulBaris, baris:[{k,label}], kelompok:[{k,label}], list, kunciBaris(m), kunciKelompok(m), totalKelompok:bool, klik:{}}
+  const sel = (rk, gk) => o.list.filter((m) => (rk === '*' || o.kunciBaris(m) === rk) && (gk === '*' || o.kunciKelompok(m) === gk));
+  const grup = o.kelompok.concat(o.totalKelompok === false ? [] : [{ k: '*', label: o.labelTotalKelompok || 'Total', total: true }]);
+  const sel3 = (rk, g) => { const x = hitLP(sel(rk, g.k)); return x; };
+  const sel3d = (x, rk, g, tot) => {
+    const f = Object.assign({}, o.filter || {});
+    if (rk !== '*') f[o.fBaris] = rk;
+    if (g.k !== '*') f[o.fKelompok] = g.k;
+    const at = (gd) => ` data-drill='${esc(JSON.stringify(Object.assign({}, f, gd ? { gender: gd } : {})))}'`;
+    const td = (n, gd, cls) => `<td class="${cls || ''}${n ? '' : ' nol'}"${n ? at(gd) : ''}>${fmtNum(n)}</td>`;
+    return td(x.L, 'L', g.total || tot ? 'sub' : '') + td(x.P, 'P', g.total || tot ? 'sub' : '') + td(x.T, '', 'tot');
+  };
+  let tanpaGender = 0;
+  const head = `<thead><tr><th rowspan="2" class="xt-row">${esc(o.judulBaris)}</th>${grup.map((g) => `<th colspan="3" class="xt-grp${g.total ? ' xt-gtot' : ''}">${esc(g.label)}</th>`).join('')}</tr>
+    <tr>${grup.map((g) => `<th class="${g.total ? 'xt-gtot' : ''}">L</th><th class="${g.total ? 'xt-gtot' : ''}">P</th><th class="${g.total ? 'xt-gtot' : ''}">Total</th>`).join('')}</tr></thead>`;
+  const body = o.baris.map((b) => `<tr><th class="xt-row">${esc(b.label)}</th>${grup.map((g) => sel3d(sel3(b.k, g), b.k, g)).join('')}</tr>`).join('');
+  const totRow = `<tr class="xt-total"><th class="xt-row">Total</th>${grup.map((g) => { const x = sel3('*', g); if (g.total) tanpaGender = x.X; return sel3d(x, '*', g, true); }).join('')}</tr>`;
+  if (o.totalKelompok === false) tanpaGender = hitLP(o.list).X;
+  return `<div class="xt-wrap"><table class="xt">${head}<tbody>${body}</tbody><tfoot>${totRow}</tfoot></table></div>` +
+    (tanpaGender ? `<p class="xt-note">${ic('info')}<span>Total memuat <b>${fmtNum(tanpaGender)}</b> mahasiswa yang jenis kelaminnya belum diisi (tidak masuk kolom L/P). Lengkapi lewat <a href="#/impor">Impor Excel → Perbarui data</a>.</span></p>` : '');
+}
+
 registerPage('dashboard', {
-  crumb: ['Dashboard', 'Overview'],
+  crumb: () => ['Dashboard', 'Data Mahasiswa ' + semesterLabel()],
   template: () => `
     <div class="grid g4" id="db-kpi"></div>
-    <div class="mt"><h2 class="section">Jumlah Mahasiswa per Kelas</h2><p class="section-sub" id="db-ta"></p></div>
-    <div class="grid g4 mt-s" id="db-kelas"></div>
-    <div class="grid g3 charts mt">
-      <div class="card chart-card"><div class="card-head"><div><h3 class="card-title">Mahasiswa per Kelas</h3><p class="section-sub">Distribusi total per program kelas</p></div><span class="muted">${ic('chart-column')}</span></div><div id="ch-kelas" style="flex:1;display:flex;flex-direction:column"></div></div>
-      <div class="card chart-card"><div class="card-head"><div><h3 class="card-title">Proporsi Status</h3><p class="section-sub">Rasio keaktifan mahasiswa</p></div><span class="muted">${ic('chart-pie')}</span></div><div id="ch-status" style="flex:1;display:flex;flex-direction:column"></div></div>
-      <div class="card chart-card"><div class="card-head"><div><h3 class="card-title">Mahasiswa per Prodi</h3><p class="section-sub">Sebaran program studi</p></div><span class="muted">${ic('graduation-cap')}</span></div><div id="ch-prodi"></div></div>
+    <div class="card pf-bar mt">
+      <div><h3 class="card-title">Detail &amp; Filter Cepat Program Studi</h3><p class="section-sub" data-pf-info></p></div>
+      <div class="pf-btns" role="group" aria-label="Filter program studi">
+        <button type="button" data-pf="">Semua</button>${PRODI_KEYS.map((p) => `<button type="button" data-pf="${p}" title="${esc(PRODI[p])}">${p}<small data-pf-n="${p}"></small></button>`).join('')}
+      </div>
     </div>
+    <div class="grid g4 charts4 mt">
+      <div class="card chart-card"><div class="card-head"><h3 class="card-title">Jumlah Mahasiswa per Angkatan</h3><span class="muted">${ic('chart-column')}</span></div><div class="ch-body" id="ch-angkatan"></div></div>
+      <div class="card chart-card"><div class="card-head"><h3 class="card-title">Jumlah Mahasiswa per Program Studi</h3><span class="muted">${ic('graduation-cap')}</span></div><div class="ch-body" id="ch-prodi"></div></div>
+      <div class="card chart-card"><div class="card-head"><h3 class="card-title">Komposisi Gender</h3><span class="muted">${ic('users')}</span></div><div class="ch-body" id="ch-gender"></div></div>
+      <div class="card chart-card"><div class="card-head"><h3 class="card-title">Status Akademik</h3><span class="muted">${ic('chart-pie')}</span></div><div class="ch-body" id="ch-status"></div></div>
+    </div>
+    <div class="rekap-grid mt">
+      <div class="card rekap-card"><h3 class="card-title">Rekap Mahasiswa per Angkatan dan Program Studi</h3><div id="tb-angkatan"></div></div>
+      <div class="card rekap-card"><h3 class="card-title">Rekap Mahasiswa per Program Studi dan Status</h3><div id="tb-status"></div></div>
+    </div>
+    <div class="card rekap-card mt"><h3 class="card-title">Rekap Mahasiswa per Program Studi dan Kelas</h3><div id="tb-kelas"></div></div>
     <div class="card table-card mt">
       <div class="card-pad" style="padding-bottom:18px;display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap">
         <div><h2 class="section">Aktivitas Terbaru</h2><p class="section-sub">Mutasi status, cuti, dan pengunduran diri mahasiswa</p></div>
@@ -40,6 +100,8 @@ registerPage('dashboard', {
       <div id="db-aktivitas"></div>
     </div>`,
   mount(el) {
+    const self = this;
+    this.prodi = Store.get(userKey('db:prodi'), '');
     this.tbl = new Tabel($('#db-aktivitas', el), {
       id: 'db', pageSize: 5, dark: true, empty: 'Belum ada mutasi status.',
       cols: [
@@ -52,70 +114,98 @@ registerPage('dashboard', {
       rowAttr: (r) => 'class="clickable" data-mid="' + esc(r.mahasiswa_id) + '" data-nim="' + esc(r.nim) + '"',
       info: () => ''
     });
-    el.querySelector('.tbl-foot').hidden = true;
+    el.querySelector('#db-aktivitas .tbl-foot').hidden = true;
     el.addEventListener('click', (e) => {
+      const pf = e.target.closest('[data-pf]');
+      if (pf) { self.setProdi(el, pf.dataset.pf === self.prodi ? '' : pf.dataset.pf); return; }
+      const bar = e.target.closest('[data-prodi-bar]');
+      if (bar) { self.setProdi(el, bar.dataset.prodiBar === self.prodi ? '' : bar.dataset.prodiBar); return; }
+      const d = e.target.closest('[data-drill]');
+      if (d) { bukaDaftarMahasiswa(JSON.parse(d.dataset.drill)); return; }
       const tr = e.target.closest('tr[data-nim]');
       if (tr) { const m = S.byId.get(tr.dataset.mid) || S.mhs.find((x) => x.nim === tr.dataset.nim); if (m) Detail.open(m.id); }
     });
   },
+  setProdi(el, p) { this.prodi = p; Store.set(userKey('db:prodi'), p); this.refresh(el); },
   show(el) { if (pageNeedsRender(el) || !el._done) this.refresh(el); el._done = 1; },
   refresh(el) {
-    const c = hitungStatus(S.mhs), tot = c.total || 0, pct = (n) => (tot ? (n / tot) * 100 : 0);
-    const th = Math.max(0, ...S.mhs.map((m) => +m.tahun_masuk || 0)) || new Date().getFullYear();
-    const baru = S.mhs.filter((m) => +m.tahun_masuk === th).length;
-    const kpi = (icon, tileCls, chip, chipCls, lbl, val, foot, deco) => `
-      <div class="card kpi"><div class="top"><div class="icon-tile ${tileCls}">${ic(icon)}</div><span class="pill ${chipCls}">${chip}</span></div>
-      <div class="lbl">${lbl}</div><div class="val">${fmtNum(val)}</div><div class="foot">${foot}</div><div class="deco" style="background:${deco}"></div></div>`;
+    const pf = this.prodi, semua = S.mhs, list = pf ? semua.filter((m) => m.prodi === pf) : semua;
+    const c = hitungStatus(list), tot = c.total || 0, pct = (n) => (tot ? (n / tot) * 100 : 0);
+    const lpAll = hitLP(list), lpAktif = hitLP(list.filter((m) => m.status === 'Aktif'));
+    const lp = (x) => `<div class="lp"><span class="g-L-t">${ic('user')} L <b>${fmtNum(x.L)}</b></span><span class="g-P-t">${ic('user')} P <b>${fmtNum(x.P)}</b></span>${x.X ? `<span class="lp-x" data-tip="${fmtNum(x.X)} mahasiswa belum diisi jenis kelaminnya">${ic('circle-help')} <b>${fmtNum(x.X)}</b></span>` : ''}</div>`;
+    const kpi = (icon, tile, lbl, val, cap, extra, deco, side) => `
+      <div class="card kpi kpi2"><div class="top"><div class="icon-tile ${tile}">${ic(icon)}</div>${side ? `<span class="kpi-side">${ic(side)}</span>` : ''}</div>
+      <div class="lbl">${lbl}</div><div class="val">${fmtNum(val)}</div>${extra || ''}<div class="foot">${cap}</div><div class="deco" style="background:${deco}"></div></div>`;
     $('#db-kpi', el).innerHTML =
-      kpi('users', 'sek', '<span data-tip="Mahasiswa angkatan ' + th + '">+' + fmtNum(baru) + ' (' + th + ')</span>', 'sek', 'Total Mahasiswa', tot, ic('trending-up') + ' Terdaftar aktif, cuti &amp; keluar', 'var(--sek-tint)') +
-      kpi('shield-check', 'ic-aktif', fmtPct(pct(c.Aktif)), 'gray', 'Aktif', c.Aktif, '<span class="dot" style="background:var(--st-aktif)"></span> Mengikuti perkuliahan aktif', 'var(--soft-2)') +
-      kpi('calendar-x', 'ic-cuti', fmtPct(pct(c.Cuti)), 'gold', 'Cuti', c.Cuti, '<span class="dot" style="background:var(--st-cuti)"></span> Sedang cuti akademik', 'color-mix(in srgb,var(--aksen) 18%,var(--kartu))') +
-      kpi('user-minus', 'ic-md', fmtPct(pct(c['Mengundurkan Diri'])), 'red', 'Mengundurkan Diri', c['Mengundurkan Diri'], '<span class="dot" style="background:var(--st-md)"></span> Total akumulasi', 'var(--bad-bg)');
-    $('#db-ta', el).textContent = 'Tahun akademik ' + tahunAkademik(todayStr()) + ' · data per ' + fmtTgl(todayStr());
+      kpi('users', 'sek', 'Total Mahasiswa', tot, pf ? 'Prodi ' + esc(PRODI[pf]) : 'Seluruh angkatan', lp(lpAll), 'var(--sek-tint)') +
+      kpi('user-check', 'k-aktif', 'Mahasiswa Aktif', c.Aktif, fmtPct(pct(c.Aktif)) + ' dari total', lp(lpAktif), 'color-mix(in srgb,var(--st-aktif) 12%,var(--kartu))', 'chart-column') +
+      kpi('calendar-days', 'k-cuti', 'Mahasiswa Cuti', c.Cuti, fmtPct(pct(c.Cuti)) + ' dari total', '', 'color-mix(in srgb,var(--aksen) 18%,var(--kartu))', 'history') +
+      kpi('user-minus', 'k-md', 'Mengundurkan Diri', c['Mengundurkan Diri'], fmtPct(pct(c['Mengundurkan Diri'])) + ' dari total', '', 'var(--bad-bg)');
 
-    const warna = ['var(--k1)', 'var(--k2)', 'var(--k3)', 'var(--k4)'], warnaBar = ['var(--k1)', 'var(--k2)', 'var(--k3-bar, var(--k3))', 'var(--k4)'];
-    const perKelas = KELAS.map((k) => hitungStatus(S.mhs.filter((m) => m.kelas === k)));
-    $('#db-kelas', el).innerHTML = KELAS.map((k, i) => {
-      const x = perKelas[i];
-      return `<div class="card kelas-card"><div class="hd"><div class="nm" style="color:${warna[i]}">${esc(KELAS_LABEL[k])}</div><span class="cnt">${fmtNum(x.total)} Mhs</span></div>
-        <div class="kv"><span class="k"><span class="dot" style="background:var(--st-aktif)"></span>Aktif</span><b>${fmtNum(x.Aktif)}</b></div>
-        <div class="kv"><span class="k"><span class="dot" style="background:var(--st-cuti)"></span>Cuti</span><b>${fmtNum(x.Cuti)}</b></div>
-        <div class="kv"><span class="k"><span class="dot" style="background:var(--st-md)"></span>Keluar</span><b>${fmtNum(x['Mengundurkan Diri'])}</b></div>
-        <div class="bar" data-tip="${fmtPct(x.total ? (x.Aktif / x.total) * 100 : 0)} aktif"><i style="width:${x.total ? (x.Aktif / x.total) * 100 : 0}%;background:${warnaBar[i]}"></i></div></div>`;
-    }).join('');
+    // Panel filter cepat
+    $$('[data-pf]', el).forEach((b) => b.classList.toggle('on', b.dataset.pf === pf));
+    PRODI_KEYS.forEach((p) => { $('[data-pf-n="' + p + '"]', el).textContent = fmtNum(semua.filter((m) => m.prodi === p).length); });
+    $('[data-pf-info]', el).textContent = pf ? 'Menampilkan ' + PRODI[pf] + ' (' + pf + ') · klik lagi untuk semua prodi' : 'Menampilkan semua program studi · klik prodi untuk menyaring seluruh dashboard';
 
-    // Grafik 1 — batang vertikal (satu seri, satu warna, label langsung)
-    const maxK = Math.max(1, ...perKelas.map((x) => x.total));
-    $('#ch-kelas', el).innerHTML = '<div class="vbars">' + perKelas.map((x, i) =>
-      `<div class="vbar" data-tip="${esc(KELAS_LABEL[KELAS[i]])}: ${fmtNum(x.total)} mhs · aktif ${fmtNum(x.Aktif)}"><span class="v">${fmtNum(x.total)}</span><span class="b" style="height:${(x.total / maxK) * 82}%"></span></div>`).join('') +
-      '</div><div class="vlabels">' + KELAS.map((k) => '<span>' + esc(KELAS_PENDEK[k]) + '</span>').join('') + '</div>';
+    // Grafik 1 — per angkatan (satu seri, satu warna)
+    const tahun = [...new Set(list.map((m) => +m.tahun_masuk).filter(Boolean))].sort((a, b) => a - b);
+    const perTh = tahun.map((t) => [t, list.filter((m) => +m.tahun_masuk === t).length]);
+    const maxT = Math.max(1, ...perTh.map((x) => x[1]));
+    $('#ch-angkatan', el).innerHTML = perTh.length ? '<div class="vbars">' + perTh.map(([t, n]) =>
+      `<div class="vbar" data-tip="Angkatan ${t}: ${fmtNum(n)} mahasiswa"><span class="v">${fmtNum(n)}</span><span class="b" style="height:${(n / maxT) * 80}%"></span></div>`).join('') +
+      '</div><div class="vlabels">' + perTh.map(([t]) => '<span>' + t + '</span>').join('') + '</div>' : '<div class="empty">Belum ada data.</div>';
 
-    // Grafik 2 — donat status (warna status tervalidasi + legenda berangka)
-    const seg = [['Aktif', c.Aktif, 'var(--st-aktif)'], ['Cuti', c.Cuti, 'var(--st-cuti)'], ['Mengundurkan Diri', c['Mengundurkan Diri'], 'var(--st-md)']];
-    const R = 70, C = 2 * Math.PI * R;
-    let off = 0;
-    const parts = seg.filter((s) => s[1] > 0);
-    const arcs = parts.map((s) => {
-      const len = tot ? (s[1] / tot) * C : 0, gap = parts.length > 1 ? Math.min(3, len / 2) : 0;
-      const a = `<circle r="${R}" cx="90" cy="90" fill="none" stroke="${s[2]}" stroke-width="26" stroke-dasharray="${Math.max(0, len - gap)} ${C}" stroke-dashoffset="${-off}" transform="rotate(-90 90 90)"><title>${s[0]}: ${fmtNum(s[1])} (${fmtPct(pct(s[1]))})</title></circle>`;
-      off += len; return a;
-    }).join('');
-    $('#ch-status', el).innerHTML = `<div class="donut-wrap"><svg class="donut" viewBox="0 0 180 180" role="img" aria-label="Proporsi status mahasiswa">
-        <circle r="${R}" cx="90" cy="90" fill="none" stroke="var(--line)" stroke-width="26"/>${arcs}
-        <text x="90" y="84" text-anchor="middle" font-size="12" fill="var(--ink-2)" style="fill:var(--ink-2)">Total</text>
-        <text x="90" y="106" text-anchor="middle" font-size="24" font-weight="800">${fmtNum(tot)}</text></svg></div>
-      <div class="legend">${seg.map((s) => `<span data-tip="${s[0]}: ${fmtPct(pct(s[1]))}"><i class="dot" style="background:${s[2]}"></i>${s[0] === 'Mengundurkan Diri' ? 'Keluar' : s[0]} <b>${fmtNum(s[1])}</b></span>`).join('')}</div>`;
+    // Grafik 2 — per prodi (warna per prodi, prodi terpilih disorot; klik batang = filter)
+    const perP = PRODI_KEYS.map((p) => [p, semua.filter((m) => m.prodi === p).length]);
+    const maxP = Math.max(1, ...perP.map((x) => x[1]));
+    $('#ch-prodi', el).innerHTML = '<div class="vbars">' + perP.map(([p, n]) =>
+      `<div class="vbar${pf && pf !== p ? ' redup' : ''}" data-prodi-bar="${p}" style="cursor:pointer" data-tip="${esc(PRODI[p])}: ${fmtNum(n)} mahasiswa · klik untuk menyaring"><span class="v">${fmtNum(n)}</span><span class="b" style="height:${(n / maxP) * 80}%;background:var(--pr-${p})"></span></div>`).join('') +
+      '</div><div class="vlabels">' + perP.map(([p]) => '<span>' + p + '</span>').join('') + '</div>';
 
-    // Grafik 3 — batang horizontal per prodi
-    const perProdi = Object.keys(PRODI).map((p) => [p, S.mhs.filter((m) => m.prodi === p).length]);
-    const maxP = Math.max(1, ...perProdi.map((x) => x[1]));
-    $('#ch-prodi', el).innerHTML = '<div class="hbars">' + perProdi.map(([p, n]) =>
-      `<div class="hbar" data-tip="${esc(PRODI[p])}: ${fmtNum(n)} mahasiswa (${fmtPct(tot ? (n / tot) * 100 : 0)})"><div class="row"><span>${esc(PRODI[p])} (${p})</span><b>${fmtNum(n)} Mhs</b></div><div class="track"><i style="width:${(n / maxP) * 100}%"></i></div></div>`).join('') + '</div>';
+    // Grafik 3 — komposisi gender
+    $('#ch-gender', el).innerHTML = donutSvg([
+      { k: 'Laki-laki', n: lpAll.L, c: 'var(--g-L)', selalu: 1 }, { k: 'Perempuan', n: lpAll.P, c: 'var(--g-P)', selalu: 1 },
+      { k: 'Belum diisi', n: lpAll.X, c: 'var(--neutral-ink)' }
+    ], tot, fmtNum(tot), 'mahasiswa', 'Komposisi gender');
 
-    const akt = S.riwayat.slice().sort((a, b) => b.waktu - a.waktu).slice(0, 5);
+    // Grafik 4 — status akademik
+    $('#ch-status', el).innerHTML = donutSvg([
+      { k: 'Aktif', n: c.Aktif, c: 'var(--st-aktif)', selalu: 1 }, { k: 'Cuti', n: c.Cuti, c: 'var(--st-cuti)', selalu: 1 },
+      { k: 'Mengundurkan Diri', n: c['Mengundurkan Diri'], c: 'var(--st-md)', selalu: 1 }
+    ], tot, fmtPct(pct(c.Aktif)), 'aktif', 'Status akademik');
+
+    // Tabel rekap (header bertingkat L | P | Total) — klik angka untuk membuka daftarnya
+    const prodiBaris = (pf ? [pf] : PRODI_KEYS).map((p) => ({ k: p, label: p }));
+    const filterDasar = pf ? { prodi: pf } : {};
+    $('#tb-angkatan', el).innerHTML = xtab({
+      judulBaris: 'Angkatan', list, filter: filterDasar, fBaris: 'tahun', fKelompok: 'prodi',
+      baris: tahun.map((t) => ({ k: t, label: String(t) })), kunciBaris: (m) => +m.tahun_masuk,
+      kelompok: prodiBaris, kunciKelompok: (m) => m.prodi, labelTotalKelompok: 'Total Angkatan', totalKelompok: !pf
+    });
+    $('#tb-status', el).innerHTML = xtab({
+      judulBaris: 'Program Studi', list, filter: filterDasar, fBaris: 'prodi', fKelompok: 'status',
+      baris: prodiBaris, kunciBaris: (m) => m.prodi,
+      kelompok: STATUS.map((s) => ({ k: s, label: s })), kunciKelompok: (m) => m.status
+    });
+    $('#tb-kelas', el).innerHTML = xtab({
+      judulBaris: 'Program Studi', list, filter: filterDasar, fBaris: 'prodi', fKelompok: 'kelas',
+      baris: prodiBaris, kunciBaris: (m) => m.prodi,
+      kelompok: KELAS.map((k) => ({ k, label: k })), kunciKelompok: (m) => m.kelas
+    });
+    $$('.xt-note', el).forEach((n, i) => { if (i) n.remove(); });     // catatan gender cukup sekali
+
+    const akt = S.riwayat.filter((r) => !pf || r.prodi === pf).sort((a, b) => b.waktu - a.waktu).slice(0, 5);
     this.tbl.setRows(akt, true);
   }
 });
+
+/** Buka Data Mahasiswa dengan filter tertentu (dari angka di tabel rekap dashboard). */
+function bukaDaftarMahasiswa(f) {
+  const isi = Object.assign({ q: '', prodi: '', kelas: '', status: '', tahun: '', gender: '' }, f);
+  isi.tahun = isi.tahun ? String(isi.tahun) : '';
+  Pages.mahasiswa.pending = isi;
+  go('mahasiswa');
+}
 
 // =====================================================================
 // DATA MAHASISWA
@@ -136,6 +226,7 @@ registerPage('mahasiswa', {
         <label class="search"><span class="sr-only">Cari</span>${ic('search')}<input class="input" data-f="q" placeholder="Cari nama atau NIM…" autocomplete="off"></label>
         <select class="input" data-f="prodi">${optProdi('', 'Semua Prodi')}</select>
         <select class="input" data-f="kelas">${optKelas('', 'Semua Kelas')}</select>
+        <select class="input" data-f="gender"><option value="">Semua Gender</option><option value="L">Laki-laki (L)</option><option value="P">Perempuan (P)</option><option value="-">Belum diisi</option></select>
         <select class="input" data-f="status">${optStatus('')}</select>
         <select class="input" data-f="tahun"><option value="">Tahun Masuk</option></select>
         <button class="icon-btn" data-act="reset" title="Atur ulang filter" aria-label="Atur ulang filter">${ic('rotate-ccw')}</button>
@@ -145,7 +236,7 @@ registerPage('mahasiswa', {
     <div class="card table-card mt" id="mhs-tbl"></div>`,
   mount(el) {
     const self = this;
-    this.f = Store.get(userKey('filter:mhs'), { q: '', prodi: '', kelas: '', status: '', tahun: '' });
+    this.f = Object.assign({ q: '', prodi: '', kelas: '', status: '', tahun: '', gender: '' }, Store.get(userKey('filter:mhs'), {}));
     $$('.adm', el).forEach((a) => { a.hidden = !isAdmin(); });
     this.tbl = new Tabel($('#mhs-tbl', el), {
       id: 'mhs', pageSize: 10, sortKey: 'nim', empty: 'Tidak ada mahasiswa yang cocok dengan filter.',
@@ -153,6 +244,7 @@ registerPage('mahasiswa', {
         { key: 'no', label: 'No', render: (r, i) => i + 1, m: 'hide', cls: 'muted' },
         { key: 'nim', label: 'NIM', sort: true, cls: 'nim' },
         { key: 'nama', label: 'Nama Mahasiswa', sort: true, cls: 'nama', m: 'main' },
+        { key: 'gender', label: 'Gender', sort: true, render: (r) => chipGender(r.gender) },
         { key: 'prodi', label: 'Prodi', sort: true, render: (r) => chipProdi(r.prodi) },
         { key: 'kelas', label: 'Kelas', sort: true, render: (r) => kelasHtml(r.kelas) },
         { key: 'tahun_masuk', label: 'Tahun', sort: true },
@@ -177,7 +269,7 @@ registerPage('mahasiswa', {
         if (a === 'lihat') Detail.open(id);
         else if (a === 'ubah') go('form', id);
         else if (a === 'hapus') hapusMahasiswa(id);
-        else if (a === 'reset') { self.f = { q: '', prodi: '', kelas: '', status: '', tahun: '' }; $$('[data-f]', el).forEach((i) => { i.value = ''; }); apply(); }
+        else if (a === 'reset') { self.f = { q: '', prodi: '', kelas: '', status: '', tahun: '', gender: '' }; $$('[data-f]', el).forEach((i) => { i.value = ''; }); apply(); }
         else if (a === 'simpan-filter') { Store.set(userKey('filter:mhs'), self.f); toast('Filter disimpan untuk kunjungan berikutnya.'); }
         else if (a === 'unduh') self.unduh(b);
         return;
@@ -189,9 +281,20 @@ registerPage('mahasiswa', {
   filtered() {
     const f = this.f;
     return S.mhs.filter((m) => (!f.prodi || m.prodi === f.prodi) && (!f.kelas || m.kelas === f.kelas) && (!f.status || m.status === f.status) &&
+      (!f.gender || (f.gender === '-' ? !m.gender : m.gender === f.gender)) &&
       (!f.tahun || String(m.tahun_masuk) === f.tahun) && cariCocok(f.q, [m.nama.toLowerCase(), m.nim, (m.nomor_surat || '').toLowerCase()]));
   },
-  show(el) { this.render(el, false); },
+  show(el) {
+    // Datang dari angka di tabel rekap dashboard → terapkan filternya
+    if (this.pending) {
+      this.f = this.pending; this.pending = null;
+      $$('[data-f]', el).forEach((i) => { i.value = this.f[i.dataset.f] || ''; });
+      this.render(el, true);
+      const sel = $('[data-f="tahun"]', el); if (sel) sel.value = this.f.tahun || '';
+      return;
+    }
+    this.render(el, false);
+  },
   refresh(el) { this.render(el, false); },
   render(el, resetPage) {
     const tahun = [...new Set(S.mhs.map((m) => m.tahun_masuk).filter(Boolean))].sort((a, b) => b - a);
@@ -207,9 +310,9 @@ registerPage('mahasiswa', {
     try {
       const rows = this.tbl.sorted();
       await exportXlsx('Data_Mahasiswa_' + stampFile() + '.xlsx', 'Data Mahasiswa',
-        ['No', 'NIM', 'Nama Lengkap', 'Prodi', 'Program Studi', 'Kelas', 'Tahun Masuk', 'Status', 'Tanggal Status', 'Nomor Surat', 'Catatan'],
-        rows.map((m, i) => [i + 1, m.nim, m.nama, m.prodi, PRODI[m.prodi] || '', m.kelas, m.tahun_masuk, m.status, m.tanggal_status, m.nomor_surat, m.catatan]),
-        [5, 13, 32, 7, 26, 20, 11, 18, 14, 34, 30]);
+        ['No', 'NIM', 'Nama Lengkap', 'Jenis Kelamin', 'Prodi', 'Program Studi', 'Kelas', 'Tahun Masuk', 'Status', 'Tanggal Status', 'Nomor Surat', 'Catatan'],
+        rows.map((m, i) => [i + 1, m.nim, m.nama, m.gender || '', m.prodi, PRODI[m.prodi] || '', m.kelas, m.tahun_masuk, m.status, m.tanggal_status, m.nomor_surat, m.catatan]),
+        [5, 13, 32, 13, 7, 26, 20, 11, 18, 14, 34, 30]);
       toast(fmtNum(rows.length) + ' baris diunduh sesuai filter aktif.');
     } catch (e) { toast(e.message, 'err'); }
     setBusy(btn, false);
@@ -249,6 +352,7 @@ const Detail = {
       </div>
       <dl class="dl">
         <dt>Status</dt><dd>${chipStatus(m.status)}</dd>
+        <dt>Jenis Kelamin</dt><dd>${m.gender ? GENDER[m.gender] + ' (' + m.gender + ')' : '<span class="muted">Belum diisi</span>'}</dd>
         <dt>Program Studi</dt><dd>${esc(PRODI[m.prodi] || m.prodi)} (${esc(m.prodi)})</dd>
         <dt>Kelas</dt><dd>${esc(KELAS_LABEL[m.kelas] || m.kelas)}</dd>
         <dt>Tahun Masuk</dt><dd>${esc(m.tahun_masuk)}</dd>
@@ -296,6 +400,7 @@ registerPage('form', {
           <div class="field"><label for="f-prodi">Program Studi<span class="req">*</span></label><select class="input" id="f-prodi" name="prodi">${optProdi('')}</select><span class="err" data-err="prodi"></span></div>
           <div class="field"><label for="f-kelas">Kelas<span class="req">*</span></label><select class="input" id="f-kelas" name="kelas">${optKelas('')}</select><span class="err" data-err="kelas"></span></div>
           <div class="field"><label for="f-tahun">Tahun Masuk<span class="req">*</span></label><input class="input" id="f-tahun" name="tahun_masuk" type="number" min="1990" max="2100" inputmode="numeric"><span class="err" data-err="tahun_masuk"></span></div>
+          <div class="field"><label for="f-gender">Jenis Kelamin<span class="req">*</span></label><select class="input" id="f-gender" name="gender"><option value="">Pilih Jenis Kelamin</option><option value="L">Laki-laki (L)</option><option value="P">Perempuan (P)</option></select><span class="hint" data-gender-hint></span><span class="err" data-err="gender"></span></div>
         </div>
       </div>
       <div class="card form-section mt">
@@ -330,7 +435,11 @@ registerPage('form', {
       if (e.target.id === 'f-nim') self.cekNim();
       if (['f-tgl'].includes(e.target.id)) self.updatePreview();
     });
-    form.addEventListener('change', (e) => { if (['f-prodi', 'f-tgl'].includes(e.target.id)) self.updatePreview(); if (e.target.id === 'f-file') self.pilihFile(e.target.files[0]); });
+    form.addEventListener('change', (e) => {
+      if (['f-prodi', 'f-tgl'].includes(e.target.id)) self.updatePreview();
+      if (e.target.id === 'f-file') self.pilihFile(e.target.files[0]);
+      if (e.target.id === 'f-kelas') self.sesuaikanGender();
+    });
     form.addEventListener('submit', (e) => { e.preventDefault(); self.simpan(); });
     el.addEventListener('dragover', (e) => { const d = e.target.closest('.drop'); if (d) { e.preventDefault(); d.classList.add('drag'); } });
     el.addEventListener('dragleave', (e) => { const d = e.target.closest('.drop'); if (d) d.classList.remove('drag'); });
@@ -354,6 +463,8 @@ registerPage('form', {
     $$('.invalid', this.el).forEach((x) => x.classList.remove('invalid'));
     f.nim.value = m ? m.nim : ''; f.nama.value = m ? m.nama : '';
     f.prodi.value = m ? m.prodi : ''; f.kelas.value = m ? m.kelas : '';
+    f.gender.value = m ? m.gender || '' : '';
+    this.sesuaikanGender();
     f.tahun_masuk.value = m ? m.tahun_masuk : new Date().getFullYear();
     f.catatan.value = m ? m.catatan || '' : '';
     this.upload = null; this.gantiBerkas = false; this.tgl = todayStr();
@@ -366,6 +477,13 @@ registerPage('form', {
     this.renderPanel();
   },
   berubah() { return this.orig ? this.orig.status !== this.status : this.status !== 'Aktif'; },
+  /** Ma'had Aly Ikhwan/Akhwat menentukan jenis kelamin secara otomatis. */
+  sesuaikanGender() {
+    const g = genderDariKelas(this.form.kelas.value), sel = this.form.gender, hint = $('[data-gender-hint]', this.el);
+    if (g) { sel.value = g; const er = $('[data-err="gender"]', this.el); if (er) er.textContent = ''; sel.classList.remove('invalid'); }
+    Array.from(sel.options).forEach((o) => { o.disabled = !!(g && o.value && o.value !== g); });
+    if (hint) hint.textContent = g ? 'Otomatis dari kelas ' + this.form.kelas.value + '.' : (this.orig && !this.orig.gender ? 'Data lama belum memiliki jenis kelamin — mohon dilengkapi.' : '');
+  },
   renderPanel() {
     const p = $('[data-status-panel]', this.el), s = this.status, o = this.orig, perlu = !!JENIS[s];
     const tglVal = (this.form.querySelector('#f-tgl') || {}).value || this.tgl || todayStr();
@@ -440,6 +558,8 @@ registerPage('form', {
     if (!f.nama.value.trim()) err.nama = 'Nama lengkap wajib diisi.';
     if (!f.prodi.value) err.prodi = 'Pilih program studi.';
     if (!f.kelas.value) err.kelas = 'Pilih kelas.';
+    if (!f.gender.value) err.gender = 'Pilih jenis kelamin.';
+    else if (genderDariKelas(f.kelas.value) && genderDariKelas(f.kelas.value) !== f.gender.value) err.gender = f.kelas.value + ' khusus ' + (genderDariKelas(f.kelas.value) === 'L' ? 'laki-laki' : 'perempuan') + '.';
     const th = +f.tahun_masuk.value;
     if (!th) err.tahun_masuk = 'Tahun masuk wajib diisi.'; else if (th < 1990 || th > new Date().getFullYear() + 1) err.tahun_masuk = 'Tahun masuk tidak wajar.';
     if (this.berubah() && JENIS[this.status] && !this.upload) err.berkas = 'Unggah surat ' + this.status + ' terlebih dahulu (wajib).';
@@ -461,7 +581,7 @@ registerPage('form', {
       const payload = {
         id: this.orig ? this.orig.id : '', versi: this.orig ? this.orig.diubah_pada : '',
         nim: f.nim.value.trim(), nama: f.nama.value.trim(), prodi: f.prodi.value, kelas: f.kelas.value,
-        tahun_masuk: +f.tahun_masuk.value, status: this.status, catatan: f.catatan.value.trim(),
+        tahun_masuk: +f.tahun_masuk.value, gender: f.gender.value, status: this.status, catatan: f.catatan.value.trim(),
         tanggal_status: this.berubah() ? (($('#f-tgl', this.el) || {}).value || todayStr()) : '',
         berkas_id: this.upload ? this.upload.id : ''
       };
