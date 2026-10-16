@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Rekap Mahasiswa · STIS Al Wafa</title>
+  <meta name="description" content="Aplikasi rekap data mahasiswa aktif, cuti, dan mengundurkan diri STIS Al Wafa.">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#1E3A5F">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%231E3A5F'/%3E%3Ctext x='32' y='43' font-family='Arial' font-weight='700' font-size='32' fill='%23fff' text-anchor='middle'%3EW%3C/text%3E%3C/svg%3E">
+
+  <!-- Koneksi awal lebih cepat ke server GAS & font -->
+  <link rel="preconnect" href="https://script.google.com" crossorigin>
+  <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+
+  <!-- Terapkan tema & mode terakhir SEBELUM halaman tergambar (tanpa kedip warna) -->
+  <script>
+    (function () {
+      try {
+        var t = JSON.parse(localStorage.getItem('rekap:v1:tema') || 'null');
+        if (t && t.primer) {
+          var s = document.createElement('style'); s.id = 'theme-vars';
+          s.textContent = ':root{--primer:' + t.primer + ';--sekunder:' + t.sekunder + ';--aksen:' + t.aksen + ';--latar:' + t.latar + ';--kartu:' + t.kartu + '}';
+          document.head.appendChild(s);
+        }
+        var m = localStorage.getItem('rekap:v1:mode');
+        if (m === 'dark') document.documentElement.setAttribute('data-mode', 'dark');
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <!-- Splash hanya tampil bila belum ada data di perangkat -->
+  <div class="splash" id="splash">
+    <div class="box"><div class="brand-logo">W</div><div>Memuat aplikasi…</div></div>
+  </div>
+
+  <!-- ===================== LOGIN ===================== -->
+  <section class="login" id="login" hidden>
+    <aside class="login-side">
+      <div class="ring"></div><div class="ring b"></div>
+      <div class="brand"><div class="brand-logo">W</div><div class="brand-name" data-institusi-upper>Rekap STIS Al Wafa</div></div>
+      <div>
+        <h2>Rekap data mahasiswa, rapi dan selalu terkini.</h2>
+        <p>Pantau mahasiswa aktif, cuti, dan mengundurkan diri lengkap dengan nomor surat otomatis dan berkas surat dalam satu tempat.</p>
+      </div>
+      <div class="stats">
+        <span><i data-ic="shield-check"></i> Akses wajib login</span>
+        <span><i data-ic="hash"></i> Nomor surat otomatis</span>
+        <span><i data-ic="file-spreadsheet"></i> Impor &amp; unduh Excel</span>
+      </div>
+    </aside>
+    <main class="login-main">
+      <div class="login-box">
+        <h1>Masuk</h1>
+        <p>Gunakan username dan password akun aplikasi Anda.</p>
+        <form id="login-form" autocomplete="on" novalidate>
+          <div id="login-alert" hidden></div>
+          <div class="field">
+            <label for="lg-user">Username</label>
+            <input class="input" id="lg-user" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+          </div>
+          <div class="field">
+            <label for="lg-pass">Password</label>
+            <div class="pw-wrap">
+              <input class="input" id="lg-pass" name="password" type="password" autocomplete="current-password" required>
+              <button type="button" class="icon-btn" data-toggle-pw="lg-pass" aria-label="Tampilkan password"><i data-ic="eye"></i></button>
+            </div>
+          </div>
+          <button class="btn btn-primary" type="submit" id="lg-btn"><i data-ic="log-out" style="transform:scaleX(-1)"></i> Masuk</button>
+        </form>
+        <div class="login-foot">© <span data-year></span> <span data-institusi>STIS Al Wafa</span> · Rekap Mahasiswa</div>
+      </div>
+    </main>
+  </section>
+
+  <!-- ===================== APLIKASI ===================== -->
+  <div class="app" id="app" hidden>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><div class="brand-logo">W</div><div class="brand-name" data-institusi-upper>Rekap STIS Al Wafa</div></div>
+      <nav class="nav" id="nav"></nav>
+      <div class="nav-foot"><button type="button" data-act="logout"><i data-ic="log-out"></i> Logout</button></div>
+    </aside>
+    <div class="scrim" data-act="close-nav"></div>
+    <div class="main">
+      <header class="topbar">
+        <button class="icon-btn menu-btn" data-act="open-nav" aria-label="Buka menu"><i data-ic="menu"></i></button>
+        <div class="crumb" id="crumb">Dashboard / <b>Overview</b></div>
+        <span class="sync-dot" id="sync-dot" title="Sinkron dengan server"></span>
+        <button class="icon-btn" data-act="toggle-mode" aria-label="Mode gelap/terang" id="mode-btn"><i data-ic="moon"></i></button>
+        <button class="user-chip" data-act="user-menu" aria-haspopup="true">
+          <span class="who"><b id="me-nama">—</b><span id="me-peran">—</span></span>
+          <span class="avatar"><i data-ic="user"></i></span>
+        </button>
+      </header>
+      <main class="content" id="content"></main>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <div class="tip" id="tip" hidden></div>
+  <div class="offline-bar" id="offline" hidden><i data-ic="wifi-off"></i> Tidak ada koneksi — data tersimpan di perangkat tetap bisa dilihat</div>
+
+  <script src="js/config.js" defer></script>
+  <script src="js/icons.js" defer></script>
+  <script src="js/core.js" defer></script>
+  <script src="js/pages-data.js" defer></script>
+  <script src="js/pages-setting.js" defer></script>
+  <script src="js/app.js" defer></script>
+</body>
+</html>
