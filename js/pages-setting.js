@@ -533,7 +533,7 @@ const IMPOR_ALIAS = {
   kelas: ['kelas', 'program kelas', 'jenis kelas'],
   tahun_masuk: ['tahun masuk', 'angkatan', 'tahun angkatan', 'th masuk', 'tahun'],
   status: ['status', 'status mahasiswa'],
-  tanggal_status: ['tanggal status', 'tgl status', 'tanggal cuti', 'tanggal surat', 'tanggal'],
+  tanggal_status: ['tanggal status', 'tgl status', 'tanggal cuti', 'tanggal surat', 'tanggal', 'tanggal wisuda', 'tgl wisuda', 'tanggal lulus'],
   nomor_surat: ['nomor surat', 'no surat', 'nomor sk'],
   catatan: ['catatan', 'keterangan', 'ket']
 };
@@ -554,7 +554,7 @@ registerPage('impor', {
       <input type="file" id="imp-file" accept=".xlsx,.xls,.csv" hidden>
       <div class="mt" data-info-tambah><div class="mini" style="margin-top:0">Kolom yang dikenali</div>
         <p class="muted" style="margin:0;line-height:1.7"><b>Wajib:</b> NIM, Nama Lengkap, Prodi (ES/HES/PAI/IAT atau nama lengkap), Kelas (Reguler/Hybrid/Ma'had Aly Ikhwan/Ma'had Aly Akhwat/Khusus), Tahun Masuk.<br>
-        <b>Opsional:</b> Jenis Kelamin (L/P), Status (Aktif/Cuti/Mengundurkan Diri — kosong = Aktif), Tanggal Status, Nomor Surat (untuk data lama), Catatan.</p></div>
+        <b>Opsional:</b> Jenis Kelamin (L/P), Status (Aktif/Cuti/Mengundurkan Diri/Lulus — kosong = Aktif), Tanggal Status (untuk Lulus = tanggal wisuda), Nomor Surat (untuk data lama), Catatan.</p></div>
       <div class="mt" data-info-perbarui hidden><div class="mini" style="margin-top:0">Cara cepat melengkapi jenis kelamin</div>
         <ol class="list-plain" style="margin:0"><li>Klik <b>Unduh Data untuk Diperbarui</b> (berisi NIM, nama, jenis kelamin, prodi, kelas, angkatan).</li>
           <li>Isi kolom <b>Jenis Kelamin</b> dengan L atau P (kolom lain boleh dibiarkan).</li><li>Unggah kembali di sini. Hanya kolom yang terisi dan berbeda yang diperbarui; <b>status tidak diubah</b>.</li></ol>
@@ -641,7 +641,7 @@ registerPage('impor', {
         ['202401017', 'Contoh Mahasiswa Cuti', 'P', 'HES', 'Khusus', 2024, 'Cuti', '2025-09-15', '045.C/HES/STIS-AL-WAFA/IX/2025', 'Data lama']
       ]);
       ws['!cols'] = [13, 30, 14, 8, 20, 12, 18, 15, 34, 24].map((w) => ({ wch: w }));
-      const pt = X.utils.aoa_to_sheet([['Kolom', 'Nilai yang diterima'], ['Jenis Kelamin', 'L (laki-laki) atau P (perempuan). Ma\'had Aly Ikhwan otomatis L, Akhwat otomatis P'], ['Prodi', 'ES, HES, PAI, IAT (atau nama lengkap prodi)'], ['Kelas', "Reguler, Hybrid, Ma'had Aly Ikhwan, Ma'had Aly Akhwat, Khusus"], ['Status', 'Aktif, Cuti, Mengundurkan Diri (kosong = Aktif)'], ['Tanggal Status', 'yyyy-mm-dd atau dd/mm/yyyy'], ['Catatan', 'Berkas surat untuk data lama diunggah dari menu Ubah Data setelah impor']]);
+      const pt = X.utils.aoa_to_sheet([['Kolom', 'Nilai yang diterima'], ['Jenis Kelamin', 'L (laki-laki) atau P (perempuan). Ma\'had Aly Ikhwan otomatis L, Akhwat otomatis P'], ['Prodi', 'ES, HES, PAI, IAT (atau nama lengkap prodi)'], ['Kelas', "Reguler, Hybrid, Ma'had Aly Ikhwan, Ma'had Aly Akhwat, Khusus"], ['Status', 'Aktif, Cuti, Mengundurkan Diri, Lulus (kosong = Aktif)'], ['Tanggal Status', 'yyyy-mm-dd atau dd/mm/yyyy · untuk Lulus isi tanggal wisuda'], ['Catatan', 'Berkas surat untuk data lama diunggah dari menu Ubah Data setelah impor']]);
       pt['!cols'] = [{ wch: 16 }, { wch: 70 }];
       X.utils.book_append_sheet(wb, ws, 'Mahasiswa');
       X.utils.book_append_sheet(wb, pt, 'Petunjuk');

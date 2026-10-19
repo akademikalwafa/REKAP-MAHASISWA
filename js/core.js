@@ -38,7 +38,7 @@ const KELAS_PENDEK = { 'Reguler': 'Reguler', 'Hybrid': 'Hybrid', "Ma'had Aly Ikh
 const GENDER = { L: 'Laki-laki', P: 'Perempuan' };
 /** Ma'had Aly Ikhwan = putra, Ma'had Aly Akhwat = putri (kelas lain tidak menentukan). */
 const genderDariKelas = (k) => (k === "Ma'had Aly Ikhwan" ? 'L' : k === "Ma'had Aly Akhwat" ? 'P' : '');
-const STATUS = ['Aktif', 'Cuti', 'Mengundurkan Diri'];
+const STATUS = ['Aktif', 'Cuti', 'Mengundurkan Diri', 'Lulus'];   // v1.2: Lulus (cukup tanggal wisuda, tanpa surat)
 const JENIS = { 'Cuti': 'CUTI', 'Mengundurkan Diri': 'MUNDUR' };
 const ROMAWI = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
 
@@ -77,6 +77,7 @@ function normStatus(v) {
   if (!s) return '';
   if (s.includes('cuti')) return 'Cuti';
   if (/(undur|mundur|keluar|resign|drop|^md$|^do$)/.test(s)) return 'Mengundurkan Diri';
+  if (/(lulus|wisuda|alumni|graduat|yudisium)/.test(s)) return 'Lulus';
   if (s === 'aktif' || s === 'active' || s.indexOf('aktif') === 0) return 'Aktif';
   return '';
 }
@@ -128,7 +129,7 @@ const chipGender = (g) => g ? '<span class="chip g-' + g + '" title="' + GENDER[
 const chipProdi = (p) => '<span class="chip ' + esc(p) + '" title="' + esc(PRODI[p] || p) + '">' + esc(p || '—') + '</span>';
 function chipStatus(s, kembali) {
   if (kembali) return '<span class="chip s-kembali">Aktif Kembali</span>';
-  const c = s === 'Aktif' ? 's-aktif' : s === 'Cuti' ? 's-cuti' : s === 'Mengundurkan Diri' ? 's-md' : 's-dihapus';
+  const c = s === 'Aktif' ? 's-aktif' : s === 'Cuti' ? 's-cuti' : s === 'Mengundurkan Diri' ? 's-md' : s === 'Lulus' ? 's-lulus' : 's-dihapus';
   return '<span class="chip ' + c + '"><span class="dot"></span>' + esc(s || '—') + '</span>';
 }
 
