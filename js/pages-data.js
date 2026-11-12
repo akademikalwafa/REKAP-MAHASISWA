@@ -9,7 +9,9 @@ const optProdi = (sel, semua) => (semua ? '<option value="">' + semua + '</optio
   Object.keys(PRODI).map((k) => '<option value="' + k + '"' + (sel === k ? ' selected' : '') + '>' + esc(PRODI[k]) + ' (' + k + ')</option>').join('');
 const optKelas = (sel, semua) => (semua ? '<option value="">' + semua + '</option>' : '<option value="">Pilih Kelas</option>') +
   KELAS.map((k) => '<option value="' + esc(k) + '"' + (sel === k ? ' selected' : '') + '>' + esc(KELAS_LABEL[k]) + '</option>').join('');
-const optStatus = (sel) => '<option value="">Semua Status</option>' + STATUS.map((k) => '<option' + (sel === k ? ' selected' : '') + '>' + k + '</option>').join('');
+const optStatus = (sel) => '<option value="">Semua Status</option><option value="terdaftar"' + (sel === 'terdaftar' ? ' selected' : '') + '>Terdaftar (Aktif + Cuti)</option>' + STATUS.map((k) => '<option' + (sel === k ? ' selected' : '') + '>' + k + '</option>').join('');
+/** v1.3 — mahasiswa terdaftar = Aktif + Cuti (dasar hitungan Total di dashboard; Mengundurkan Diri & Lulus tidak dihitung) */
+const isTerdaftar = (m) => m.status === 'Aktif' || m.status === 'Cuti';
 function cariCocok(q, fields) { if (!q) return true; const s = fields.join(' ').toLowerCase(); return q.split(/\s+/).every((w) => s.includes(w)); }
 function hitungStatus(list) {
   const c = { total: list.length, Aktif: 0, Cuti: 0, 'Mengundurkan Diri': 0, Lulus: 0 };
@@ -21,6 +23,8 @@ function mhsOfRiwayat(r) { return S.byId.get(r.mahasiswa_id) || S.mhs.find((m) =
 // =====================================================================
 // DASHBOARD (v1.1) — kartu, filter cepat prodi, 4 grafik, 3 tabel rekap L/P
 // v1.2 — kartu ke-5 "Lulus" + filter centang kelas (berlaku untuk seluruh dashboard).
+// v1.3 — Total = mahasiswa terdaftar (Aktif + Cuti) di SELURUH dashboard; Mengundurkan Diri & Lulus
+//        hanya informasi (tidak dijumlahkan). Tabel Prodi & Kelas dirinci per angkatan. Unduh Excel.
 // Semua dihitung LOKAL dari data perangkat → filter & render instan tanpa server.
 // =====================================================================
 const PRODI_KEYS = Object.keys(PRODI);
@@ -34,7 +38,7 @@ function hitLP(list) {
   list.forEach((m) => { if (m.gender === 'L') o.L++; else if (m.gender === 'P') o.P++; else o.X++; });
   return o;
 }
-function donutSvg(seg, total, atas, bawah, label) {
+function donutSvg(seg, total, atas, bawah, label, luar) {
   const R = 62, C = 2 * Math.PI * R, parts = seg.filter((s) => s.n > 0);
   let off = 0;
   const arcs = parts.map((s) => {
@@ -46,35 +50,51 @@ function donutSvg(seg, total, atas, bawah, label) {
       <circle r="${R}" cx="80" cy="80" fill="none" stroke="var(--line)" stroke-width="24"/>${arcs}
       <text x="80" y="76" text-anchor="middle" font-size="20" font-weight="800">${atas}</text>
       <text x="80" y="96" text-anchor="middle" font-size="11" style="fill:var(--ink-2)">${bawah}</text></svg></div>
-    <ul class="legend-list">${seg.filter((s) => s.n > 0 || s.selalu).map((s) => `<li data-tip="${esc(s.k)}: ${fmtNum(s.n)}"><i class="dot" style="background:${s.c}"></i><span>${esc(s.k)}</span><b>${fmtNum(s.n)}</b><em>${fmtPct(total ? (s.n / total) * 100 : 0)}</em></li>`).join('')}</ul>`;
+    <ul class="legend-list">${seg.filter((s) => s.n > 0 || s.selalu).map((s) => `<li data-tip="${esc(s.k)}: ${fmtNum(s.n)}"><i class="dot" style="background:${s.c}"></i><span>${esc(s.k)}</span><b>${fmtNum(s.n)}</b><em>${fmtPct(total ? (s.n / total) * 100 : 0)}</em></li>`).join('')}${
+      luar && luar.length ? '<li class="legend-sep">Tidak dihitung dalam total</li>' + luar.map((s) => `<li class="luar" data-tip="${esc(s.k)}: ${fmtNum(s.n)} (tidak dihitung)"><i class="dot" style="background:${s.c}"></i><span>${esc(s.k)}</span><b>${fmtNum(s.n)}</b><em></em></li>`).join('') : ''}</ul>`;
 }
-/** Tabel silang bertingkat: baris × kelompok kolom, tiap kelompok L | P | Total, plus baris Total. */
-function xtab(o) {
-  // o: {judulBaris, baris:[{k,label}], kelompok:[{k,label}], list, kunciBaris(m), kunciKelompok(m), totalKelompok:bool, klik:{}}
-  const sel = (rk, gk) => o.list.filter((m) => (rk === '*' || o.kunciBaris(m) === rk) && (gk === '*' || o.kunciKelompok(m) === gk));
-  const grup = o.kelompok.concat(o.totalKelompok === false ? [] : [{ k: '*', label: o.labelTotalKelompok || 'Total', total: true }]);
-  const sel3 = (rk, g) => { const x = hitLP(sel(rk, g.k)); return x; };
-  const sel3d = (x, rk, g, tot) => {
+/** Tabel silang bertingkat: baris × kelompok kolom, tiap kelompok L | P | Total, plus baris Total.
+ *  v1.3 — dipecah menjadi xtabModel() (menghitung angka) dan xtabHtml() (menggambar tabel).
+ *  Model yang sama dipakai unduhan Excel, sehingga isi Excel identik dengan dashboard.
+ *  - baris boleh membawa filter sendiri (b.f), mis. "ES 2021" → { prodi: 'ES', tahun: 2021 }
+ *  - o.luar = kelompok yang tampil sesudah Total tetapi TIDAK ikut dijumlahkan (Mengundurkan Diri, Lulus) */
+function xtabModel(o) {
+  // o: {judul, judulBaris, baris:[{k,label,f?,cls?}], kelompok:[{k,label}], list, kunciBaris(m), kunciKelompok(m),
+  //     totalKelompok, labelTotalKelompok, filter, fBaris, fKelompok, drillOk, luar:{list, kelompok:[{k,label}]}}
+  const grup = o.kelompok.map((g) => Object.assign({ jenis: 'isi' }, g))
+    .concat(o.totalKelompok === false ? [] : [{ k: '*', label: o.labelTotalKelompok || 'Total', jenis: 'total' }])
+    .concat(((o.luar && o.luar.kelompok) || []).map((g, i) => Object.assign({ jenis: 'luar', pertama: i === 0 }, g)));
+  const sel = (b, g) => (g.jenis === 'luar' ? o.luar.list : o.list)
+    .filter((m) => (b === '*' || o.kunciBaris(m) === b.k) && (g.k === '*' || o.kunciKelompok(m) === g.k));
+  const sel3 = (b, g) => {
+    const x = hitLP(sel(b, g));
     const f = Object.assign({}, o.filter || {});
-    if (rk !== '*') f[o.fBaris] = rk;
+    if (b !== '*') Object.assign(f, b.f || { [o.fBaris]: b.k });
     if (g.k !== '*') f[o.fKelompok] = g.k;
-    const at = (ff) => ` data-drill='${esc(JSON.stringify(ff))}'`;
-    const td = (n, gd, cls) => {
-      const ff = Object.assign({}, f, gd ? { gender: gd } : {});
-      const bisa = n && (!o.drillOk || o.drillOk(ff));     // v1.2: beberapa kelas dicentang → hanya sel yang punya kelas
-      return `<td class="${cls || ''}${n ? '' : ' nol'}"${bisa ? at(ff) : ''}>${fmtNum(n)}</td>`;
-    };
-    return td(x.L, 'L', g.total || tot ? 'sub' : '') + td(x.P, 'P', g.total || tot ? 'sub' : '') + td(x.T, '', 'tot');
+    const drill = (gd) => { const ff = Object.assign({}, f, gd ? { gender: gd } : {}); return !o.drillOk || o.drillOk(ff) ? ff : null; };
+    return { L: x.L, P: x.P, T: x.T, X: x.X, fL: drill('L'), fP: drill('P'), fT: drill('') };
   };
-  let tanpaGender = 0;
-  const head = `<thead><tr><th rowspan="2" class="xt-row">${esc(o.judulBaris)}</th>${grup.map((g) => `<th colspan="3" class="xt-grp${g.total ? ' xt-gtot' : ''}">${esc(g.label)}</th>`).join('')}</tr>
-    <tr>${grup.map((g) => `<th class="${g.total ? 'xt-gtot' : ''}">L</th><th class="${g.total ? 'xt-gtot' : ''}">P</th><th class="${g.total ? 'xt-gtot' : ''}">Total</th>`).join('')}</tr></thead>`;
-  const body = o.baris.map((b) => `<tr><th class="xt-row">${esc(b.label)}</th>${grup.map((g) => sel3d(sel3(b.k, g), b.k, g)).join('')}</tr>`).join('');
-  const totRow = `<tr class="xt-total"><th class="xt-row">Total</th>${grup.map((g) => { const x = sel3('*', g); if (g.total) tanpaGender = x.X; return sel3d(x, '*', g, true); }).join('')}</tr>`;
-  if (o.totalKelompok === false) tanpaGender = hitLP(o.list).X;
-  return `<div class="xt-wrap"><table class="xt">${head}<tbody>${body}</tbody><tfoot>${totRow}</tfoot></table></div>` +
-    (tanpaGender ? `<p class="xt-note">${ic('info')}<span>Total memuat <b>${fmtNum(tanpaGender)}</b> mahasiswa yang jenis kelaminnya belum diisi (tidak masuk kolom L/P). Lengkapi lewat <a href="#/impor">Impor Excel → Perbarui data</a>.</span></p>` : '');
+  const rows = o.baris.map((b) => ({ label: b.label, cls: b.cls || '', cells: grup.map((g) => sel3(b, g)) }));
+  const total = { label: 'Total', cells: grup.map((g) => sel3('*', g)) };
+  const iTot = grup.findIndex((g) => g.jenis === 'total');
+  return { judul: o.judul || '', judulBaris: o.judulBaris, grup, rows, total, tanpaGender: iTot > -1 ? total.cells[iTot].X : hitLP(o.list).X };
 }
+function xtabHtml(md) {
+  const kls = (g) => (g.jenis === 'total' ? 'xt-gtot' : g.jenis === 'luar' ? 'xt-luar' + (g.pertama ? ' xt-luar1' : '') : '');
+  const at = (ff) => (ff ? ` data-drill='${esc(JSON.stringify(ff))}'` : '');
+  const td = (n, ff, cls) => `<td class="${cls || ''}${n ? '' : ' nol'}"${n ? at(ff) : ''}>${fmtNum(n)}</td>`;
+  const sel3d = (x, g, tot) => {
+    const sub = g.jenis === 'total' || tot ? 'sub' : '', lu = g.jenis === 'luar' ? ' luar' : '';
+    return td(x.L, x.fL, sub + lu + (g.pertama ? ' luar1' : '')) + td(x.P, x.fP, sub + lu) + td(x.T, x.fT, 'tot' + lu);
+  };
+  const head = `<thead><tr><th rowspan="2" class="xt-row">${esc(md.judulBaris)}</th>${md.grup.map((g) => `<th colspan="3" class="xt-grp${kls(g) ? ' ' + kls(g) : ''}">${esc(g.label)}${g.jenis === 'luar' ? '<small>tidak dihitung</small>' : ''}</th>`).join('')}</tr>
+    <tr>${md.grup.map((g) => `<th class="${kls(g)}">L</th><th class="${g.jenis === 'luar' ? 'xt-luar' : kls(g)}">P</th><th class="${g.jenis === 'luar' ? 'xt-luar' : kls(g)}">Total</th>`).join('')}</tr></thead>`;
+  const body = md.rows.map((b) => `<tr${b.cls ? ` class="${b.cls}"` : ''}><th class="xt-row">${esc(b.label)}</th>${b.cells.map((x, i) => sel3d(x, md.grup[i])).join('')}</tr>`).join('');
+  const totRow = `<tr class="xt-total"><th class="xt-row">Total</th>${md.total.cells.map((x, i) => sel3d(x, md.grup[i], true)).join('')}</tr>`;
+  return `<div class="xt-wrap"><table class="xt">${head}<tbody>${body}</tbody><tfoot>${totRow}</tfoot></table></div>` +
+    (md.tanpaGender ? `<p class="xt-note">${ic('info')}<span>Total memuat <b>${fmtNum(md.tanpaGender)}</b> mahasiswa yang jenis kelaminnya belum diisi (tidak masuk kolom L/P). Lengkapi lewat <a href="#/impor">Impor Excel → Perbarui data</a>.</span></p>` : '');
+}
+function xtab(o) { return xtabHtml(xtabModel(o)); }
 
 registerPage('dashboard', {
   crumb: () => ['Dashboard', 'Data Mahasiswa ' + semesterLabel()],
@@ -93,7 +113,8 @@ registerPage('dashboard', {
           ${KELAS.map((k, i) => `<label class="kf"><input type="checkbox" data-kf="${i}"><span class="kf-box">${ic('check')}</span><span>${esc(k)}</span><small data-kf-n="${i}"></small></label>`).join('')}
           <span class="kf-aksi"><button type="button" class="btn-link" data-kf-aksi="semua">Semua</button><button type="button" class="btn-link" data-kf-aksi="kosong">Kosongkan</button></span>
         </div>
-        <div class="kf-sum" data-kf-sum aria-live="polite"></div>
+        <div class="kf-end"><div class="kf-sum" data-kf-sum aria-live="polite"></div>
+          <button type="button" class="btn btn-primary kf-unduh" data-unduh-db>${ic('file-spreadsheet')} Unduh Excel</button></div>
       </div>
     </div>
     <div class="grid g4 charts4 mt">
@@ -140,6 +161,8 @@ registerPage('dashboard', {
       self.setKelas(el);
     });
     el.addEventListener('click', (e) => {
+      const ud = e.target.closest('[data-unduh-db]');
+      if (ud) { unduhExcelDashboard(ud, self.ekspor); return; }
       const ka = e.target.closest('[data-kf-aksi]');
       if (ka) { self.kx = new Set(ka.dataset.kfAksi === 'kosong' ? KELAS : []); self.setKelas(el); return; }
       const pf = e.target.closest('[data-pf]');
@@ -159,25 +182,31 @@ registerPage('dashboard', {
     const pf = this.prodi, kx = this.kx;
     const dipilih = KELAS.filter((k) => !kx.has(k)), sebagian = kx.size > 0;
     const kelasOk = (x) => !sebagian || (KELAS.includes(x.kelas) && !kx.has(x.kelas));
-    const semua = sebagian ? S.mhs.filter(kelasOk) : S.mhs;          // dasar setelah filter kelas
-    const list = pf ? semua.filter((m) => m.prodi === pf) : semua;
-    const c = hitungStatus(list), tot = c.total || 0, pct = (n) => (tot ? (n / tot) * 100 : 0);
-    const lpAll = hitLP(list), lpAktif = hitLP(list.filter((m) => m.status === 'Aktif')), lpLulus = hitLP(list.filter((m) => m.status === 'Lulus'));
+    const prodiOk = (m) => !pf || m.prodi === pf;
+    const dasarK = sebagian ? S.mhs.filter(kelasOk) : S.mhs;          // semua status, setelah filter kelas
+    // v1.3 — dasar SELURUH hitungan: mahasiswa terdaftar (Aktif + Cuti)
+    const semua = dasarK.filter(isTerdaftar);                          // terdaftar, semua prodi (grafik & tombol prodi)
+    const list = pf ? semua.filter(prodiOk) : semua;                   // terdaftar, sesuai filter prodi & kelas
+    const luar = dasarK.filter((m) => prodiOk(m) && (m.status === 'Mengundurkan Diri' || m.status === 'Lulus'));  // info, tidak dijumlahkan
+    const c = hitungStatus(list), cl = hitungStatus(luar), tot = list.length, pct = (n) => (tot ? (n / tot) * 100 : 0);
+    const lpAll = hitLP(list), lpAktif = hitLP(list.filter((m) => m.status === 'Aktif')), lpLulus = hitLP(luar.filter((m) => m.status === 'Lulus'));
     const namaKelas = dipilih.length <= 2 ? dipilih.map((k) => KELAS_PENDEK[k]).join(' + ') : dipilih.length + ' kelas';
     const lp = (x) => `<div class="lp"><span class="g-L-t">${ic('user')} L <b>${fmtNum(x.L)}</b></span><span class="g-P-t">${ic('user')} P <b>${fmtNum(x.P)}</b></span>${x.X ? `<span class="lp-x" data-tip="${fmtNum(x.X)} mahasiswa belum diisi jenis kelaminnya">${ic('circle-help')} <b>${fmtNum(x.X)}</b></span>` : ''}</div>`;
     const kpi = (icon, tile, lbl, val, cap, extra, deco, side) => `
       <div class="card kpi kpi2"><div class="top"><div class="icon-tile ${tile}">${ic(icon)}</div>${side ? `<span class="kpi-side">${ic(side)}</span>` : ''}</div>
       <div class="lbl">${lbl}</div><div class="val">${fmtNum(val)}</div>${extra || ''}<div class="foot">${cap}</div><div class="deco" style="background:${deco}"></div></div>`;
-    const capTotal = (pf ? 'Prodi ' + esc(PRODI[pf]) : 'Seluruh angkatan') + (sebagian ? ' · ' + (dipilih.length ? esc(namaKelas) : 'tanpa kelas') : '');
+    const lingkup = (pf ? 'Prodi ' + PRODI[pf] : 'Seluruh angkatan') + (sebagian ? ' · ' + (dipilih.length ? namaKelas : 'tanpa kelas') : '');
+    const capTotal = 'Aktif + Cuti · ' + esc(lingkup);
+    const capLuar = 'Tidak dihitung dalam total';
     $('#db-kpi', el).innerHTML =
       kpi('users', 'sek', 'Total Mahasiswa', tot, capTotal, lp(lpAll), 'var(--sek-tint)') +
       kpi('user-check', 'k-aktif', 'Mahasiswa Aktif', c.Aktif, fmtPct(pct(c.Aktif)) + ' dari total', lp(lpAktif), 'color-mix(in srgb,var(--st-aktif) 12%,var(--kartu))', 'chart-column') +
       kpi('calendar-days', 'k-cuti', 'Mahasiswa Cuti', c.Cuti, fmtPct(pct(c.Cuti)) + ' dari total', '', 'color-mix(in srgb,var(--aksen) 18%,var(--kartu))', 'history') +
-      kpi('user-minus', 'k-md', 'Mengundurkan Diri', c['Mengundurkan Diri'], fmtPct(pct(c['Mengundurkan Diri'])) + ' dari total', '', 'var(--bad-bg)') +
-      kpi('graduation-cap', 'k-lulus', 'Mahasiswa Lulus', c.Lulus, fmtPct(pct(c.Lulus)) + ' dari total', lp(lpLulus), 'color-mix(in srgb,var(--st-lulus) 12%,var(--kartu))');
+      kpi('user-minus', 'k-md', 'Mengundurkan Diri', cl['Mengundurkan Diri'], capLuar, '', 'var(--bad-bg)') +
+      kpi('graduation-cap', 'k-lulus', 'Mahasiswa Lulus', cl.Lulus, capLuar, lp(lpLulus), 'color-mix(in srgb,var(--st-lulus) 12%,var(--kartu))');
 
-    // Filter centang kelas (v1.2): jumlah per kelas mengikuti filter prodi
-    const dasarProdi = pf ? S.mhs.filter((m) => m.prodi === pf) : S.mhs;
+    // Filter centang kelas (v1.2): jumlah per kelas mengikuti filter prodi (v1.3: hanya mahasiswa terdaftar)
+    const dasarProdi = S.mhs.filter((m) => prodiOk(m) && isTerdaftar(m));
     KELAS.forEach((k, i) => {
       const cb = $('[data-kf="' + i + '"]', el); cb.checked = !kx.has(k);
       $('[data-kf-n="' + i + '"]', el).textContent = fmtNum(dasarProdi.filter((m) => m.kelas === k).length);
@@ -190,7 +219,7 @@ registerPage('dashboard', {
     $$('[data-pf]', el).forEach((b) => b.classList.toggle('on', b.dataset.pf === pf));
     PRODI_KEYS.forEach((p) => { $('[data-pf-n="' + p + '"]', el).textContent = fmtNum(semua.filter((m) => m.prodi === p).length); });
     $('[data-pf-info]', el).textContent = (pf ? 'Menampilkan ' + PRODI[pf] + ' (' + pf + ') · klik lagi untuk semua prodi' : 'Menampilkan semua program studi · klik prodi untuk menyaring seluruh dashboard') +
-      (sebagian ? ' · kelas: ' + (dipilih.length ? namaKelas : 'tidak ada') : '');
+      (sebagian ? ' · kelas: ' + (dipilih.length ? namaKelas : 'tidak ada') : '') + ' · Total = Aktif + Cuti';
 
     // Grafik 1 — per angkatan (satu seri, satu warna)
     const tahun = [...new Set(list.map((m) => +m.tahun_masuk).filter(Boolean))].sort((a, b) => a - b);
@@ -213,39 +242,328 @@ registerPage('dashboard', {
       { k: 'Belum diisi', n: lpAll.X, c: 'var(--neutral-ink)' }
     ], tot, fmtNum(tot), 'mahasiswa', 'Komposisi gender');
 
-    // Grafik 4 — status akademik
+    // Grafik 4 — status akademik (lingkaran = Aktif + Cuti; MD & Lulus hanya di legenda, tidak dihitung)
     $('#ch-status', el).innerHTML = donutSvg([
-      { k: 'Aktif', n: c.Aktif, c: 'var(--st-aktif)', selalu: 1 }, { k: 'Cuti', n: c.Cuti, c: 'var(--st-cuti)', selalu: 1 },
-      { k: 'Mengundurkan Diri', n: c['Mengundurkan Diri'], c: 'var(--st-md)', selalu: 1 }, { k: 'Lulus', n: c.Lulus, c: 'var(--st-lulus)', selalu: 1 }
-    ], tot, fmtPct(pct(c.Aktif)), 'aktif', 'Status akademik');
+      { k: 'Aktif', n: c.Aktif, c: 'var(--st-aktif)', selalu: 1 }, { k: 'Cuti', n: c.Cuti, c: 'var(--st-cuti)', selalu: 1 }
+    ], tot, fmtPct(pct(c.Aktif)), 'aktif', 'Status akademik', [
+      { k: 'Mengundurkan Diri', n: cl['Mengundurkan Diri'], c: 'var(--st-md)' }, { k: 'Lulus', n: cl.Lulus, c: 'var(--st-lulus)' }
+    ]);
 
     // Tabel rekap (header bertingkat L | P | Total) — klik angka untuk membuka daftarnya
     const prodiBaris = (pf ? [pf] : PRODI_KEYS).map((p) => ({ k: p, label: p }));
-    const filterDasar = pf ? { prodi: pf } : {};
+    const filterDasar = { status: 'terdaftar' };
+    if (pf) filterDasar.prodi = pf;
     // Data Mahasiswa hanya bisa menyaring 1 kelas → bila >1 kelas dicentang, hanya sel berkelas yang bisa diklik
     if (sebagian && dipilih.length === 1) filterDasar.kelas = dipilih[0];
     const drillOk = sebagian && dipilih.length !== 1 ? (f) => !!f.kelas : null;
-    $('#tb-angkatan', el).innerHTML = xtab({
-      judulBaris: 'Angkatan', list, filter: filterDasar, drillOk, fBaris: 'tahun', fKelompok: 'prodi',
-      baris: tahun.map((t) => ({ k: t, label: String(t) })), kunciBaris: (m) => +m.tahun_masuk,
-      kelompok: prodiBaris, kunciKelompok: (m) => m.prodi, labelTotalKelompok: 'Total Angkatan', totalKelompok: !pf
+    // v1.3 — baris tabel Prodi & Kelas dirinci per angkatan: ES 2021, ES 2022, … (baris yang kosong tidak ditampilkan)
+    const barisProdiTh = [];
+    prodiBaris.forEach((p) => {
+      let awal = true;
+      tahun.forEach((t) => {
+        if (!list.some((m) => m.prodi === p.k && +m.tahun_masuk === t)) return;
+        barisProdiTh.push({ k: p.k + ' ' + t, label: p.k + ' ' + t, f: { prodi: p.k, tahun: t }, cls: awal && barisProdiTh.length ? 'xt-sep' : '' });
+        awal = false;
+      });
     });
-    $('#tb-status', el).innerHTML = xtab({
-      judulBaris: 'Program Studi', list, filter: filterDasar, drillOk, fBaris: 'prodi', fKelompok: 'status',
-      baris: prodiBaris, kunciBaris: (m) => m.prodi,
-      kelompok: STATUS.map((s) => ({ k: s, label: s })), kunciKelompok: (m) => m.status
-    });
-    $('#tb-kelas', el).innerHTML = xtab({
-      judulBaris: 'Program Studi', list, filter: filterDasar, drillOk, fBaris: 'prodi', fKelompok: 'kelas',
-      baris: prodiBaris, kunciBaris: (m) => m.prodi,
-      kelompok: dipilih.map((k) => ({ k, label: k })), kunciKelompok: (m) => m.kelas
-    });
+    const tabel = [
+      xtabModel({
+        judul: 'Rekap Mahasiswa per Angkatan dan Program Studi',
+        judulBaris: 'Angkatan', list, filter: filterDasar, drillOk, fBaris: 'tahun', fKelompok: 'prodi',
+        baris: tahun.map((t) => ({ k: t, label: String(t) })), kunciBaris: (m) => +m.tahun_masuk,
+        kelompok: prodiBaris, kunciKelompok: (m) => m.prodi, labelTotalKelompok: 'Total Angkatan', totalKelompok: !pf
+      }),
+      xtabModel({
+        judul: 'Rekap Mahasiswa per Program Studi dan Status',
+        judulBaris: 'Program Studi', list, filter: filterDasar, drillOk, fBaris: 'prodi', fKelompok: 'status',
+        baris: prodiBaris, kunciBaris: (m) => m.prodi,
+        kelompok: [{ k: 'Aktif', label: 'Aktif' }, { k: 'Cuti', label: 'Cuti' }], kunciKelompok: (m) => m.status,
+        luar: { list: luar, kelompok: [{ k: 'Mengundurkan Diri', label: 'Mengundurkan Diri' }, { k: 'Lulus', label: 'Lulus' }] }
+      }),
+      xtabModel({
+        judul: 'Rekap Mahasiswa per Program Studi dan Kelas',
+        judulBaris: 'Program Studi', list, filter: filterDasar, drillOk, fKelompok: 'kelas',
+        baris: barisProdiTh, kunciBaris: (m) => m.prodi + ' ' + (+m.tahun_masuk),
+        kelompok: dipilih.map((k) => ({ k, label: k })), kunciKelompok: (m) => m.kelas
+      })
+    ];
+    $('#tb-angkatan', el).innerHTML = xtabHtml(tabel[0]);
+    $('#tb-status', el).innerHTML = xtabHtml(tabel[1]);
+    $('#tb-kelas', el).innerHTML = xtabHtml(tabel[2]);
     $$('.xt-note', el).forEach((n, i) => { if (i) n.remove(); });     // catatan gender cukup sekali
+
+    // v1.3 — bahan unduhan Excel: angka yang SAMA dengan yang sedang tampil
+    this.ekspor = {
+      lingkup, prodi: pf, kelas: sebagian ? dipilih : null,
+      kpi: [
+        { lbl: 'Total Mahasiswa', val: tot, lp: lpAll, cap: 'Aktif + Cuti · ' + lingkup, warna: 'sek' },
+        { lbl: 'Mahasiswa Aktif', val: c.Aktif, lp: lpAktif, cap: fmtPct(pct(c.Aktif)) + ' dari total', warna: 'aktif' },
+        { lbl: 'Mahasiswa Cuti', val: c.Cuti, cap: fmtPct(pct(c.Cuti)) + ' dari total', warna: 'cuti' },
+        { lbl: 'Mengundurkan Diri', val: cl['Mengundurkan Diri'], cap: capLuar, warna: 'md' },
+        { lbl: 'Mahasiswa Lulus', val: cl.Lulus, lp: lpLulus, cap: capLuar, warna: 'lulus' }
+      ],
+      grafik: { perTh, perP, pf, lpAll, tot, c, cl, pctAktif: pct(c.Aktif) },
+      tabel
+    };
 
     const akt = S.riwayat.filter((r) => (!pf || r.prodi === pf) && kelasOk(r)).sort((a, b) => b.waktu - a.waktu).slice(0, 5);
     this.tbl.setRows(akt, true);
   }
 });
+
+// =====================================================================
+// v1.3 — UNDUH EXCEL DASHBOARD
+// ExcelJS dimuat HANYA saat tombol diklik (tidak membebani buka/pindah halaman).
+// Angka tabel diambil dari model yang SAMA dengan tampilan dashboard → isi Excel identik.
+// =====================================================================
+function loadExcelJS() {
+  if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+  return loadScript([
+    'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js',
+    'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js'
+  ]).then(() => window.ExcelJS);
+}
+// Palet terang (Excel selalu berlatar putih, walau aplikasi sedang mode gelap)
+const XL = {
+  aktif: '#1F8A5B', cuti: '#C9A74D', md: '#C2410C', lulus: '#7C3AED', L: '#2563EB', P: '#E11D48', X: '#4A4F5C',
+  ES: '#5B3E96', HES: '#0E8A63', PAI: '#C9A74D', IAT: '#2E6FD8', ink: '#1B1D24', ink2: '#474B57', muted: '#7B7F8C', garis: '#E3E1EC'
+};
+const isHex6 = (v) => /^#[0-9a-f]{6}$/i.test(String(v || ''));
+/** Campur warna hex dengan dasar (default putih): pct = persen warna asal. */
+function campurHex(hex, pct, dasar) {
+  const p = (h) => { h = String(h).replace('#', ''); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) || 0); };
+  const a = p(hex), b = p(dasar || '#FFFFFF');
+  return '#' + a.map((v, i) => Math.round(v * pct / 100 + b[i] * (1 - pct / 100)).toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+const argb = (hex) => 'FF' + String(hex).replace('#', '').toUpperCase();
+
+/** Gambar grafik dashboard ke kanvas (PNG) — tampilan mengikuti kartu grafik di dashboard. */
+function gambarGrafikXL(jenis, d, W, H, sek) {
+  const k = 2, cv = document.createElement('canvas');
+  cv.width = W * k; cv.height = H * k;
+  const g = cv.getContext('2d');
+  g.scale(k, k);
+  const font = (w, s) => w + ' ' + s + 'px "Public Sans", "Segoe UI", Arial, sans-serif';
+  const kotak = (x, y, w, h, r) => { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); };
+  g.fillStyle = '#FFFFFF'; g.fillRect(0, 0, W, H);
+  kotak(0.5, 0.5, W - 1, H - 1, 12); g.strokeStyle = XL.garis; g.lineWidth = 1; g.stroke();
+  g.fillStyle = XL.ink; g.font = font(700, 14); g.textBaseline = 'top'; g.textAlign = 'left';
+  // judul dibungkus ke 2 baris bila tidak muat
+  const kata = d.judul.split(' '), bar = [''];
+  kata.forEach((w) => { const coba = (bar[bar.length - 1] + ' ' + w).trim(); if (g.measureText(coba).width > W - 32 && bar[bar.length - 1]) bar.push(w); else bar[bar.length - 1] = coba; });
+  bar.slice(0, 2).forEach((t, i) => g.fillText(t, 16, 14 + i * 18));
+  if (jenis === 'batang') {
+    const data = d.data, x0 = 18, x1 = W - 18, yb = H - 34, yt = bar.length > 1 ? 80 : 66;
+    if (!data.length) { g.fillStyle = XL.muted; g.font = font(500, 12); g.fillText('Belum ada data.', 16, 60); return cv.toDataURL('image/png'); }
+    const maks = Math.max(1, ...data.map((x) => x.n)), slot = (x1 - x0) / data.length, bw = Math.min(42, slot * 0.62);
+    g.strokeStyle = XL.garis; g.beginPath(); g.moveTo(x0, yb + 0.5); g.lineTo(x1, yb + 0.5); g.stroke();
+    data.forEach((x, i) => {
+      const cx = x0 + slot * i + slot / 2, h = Math.max(x.n ? 2 : 0, (x.n / maks) * (yb - yt)), bx = cx - bw / 2, by = yb - h;
+      g.globalAlpha = x.redup ? 0.32 : 1;
+      g.fillStyle = x.c;
+      if (h > 0) { const r = Math.min(4, h, bw / 2); g.beginPath(); g.moveTo(bx, yb); g.lineTo(bx, by + r); g.arcTo(bx, by, bx + r, by, r); g.lineTo(bx + bw - r, by); g.arcTo(bx + bw, by, bx + bw, by + r, r); g.lineTo(bx + bw, yb); g.closePath(); g.fill(); }
+      g.globalAlpha = 1;
+      g.fillStyle = XL.ink; g.font = font(700, 12); g.textAlign = 'center'; g.textBaseline = 'bottom'; g.fillText(fmtNum(x.n), cx, by - 4);
+      g.fillStyle = XL.ink2; g.font = font(500, 12); g.textBaseline = 'top'; g.fillText(x.label, cx, yb + 8);
+    });
+  } else {
+    const seg = d.seg.filter((s) => s.n > 0), tot = d.total, cx = W / 2, cy = 52 + 60, R = 52, tb = 20;
+    g.lineWidth = tb; g.strokeStyle = '#ECEAF3'; g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.stroke();
+    let a = -Math.PI / 2;
+    seg.forEach((s) => {
+      const sudut = tot ? (s.n / tot) * Math.PI * 2 : 0, celah = seg.length > 1 ? Math.min(0.03, sudut / 3) : 0;
+      g.strokeStyle = s.c; g.beginPath(); g.arc(cx, cy, R, a + celah / 2, a + sudut - celah / 2); g.stroke(); a += sudut;
+    });
+    g.fillStyle = XL.ink; g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.font = font(800, 18); g.fillText(d.atas, cx, cy + 4);
+    g.fillStyle = XL.ink2; g.font = font(500, 10); g.fillText(d.bawah, cx, cy + 19);
+    let y = cy + R + tb / 2 + 16;
+    const baris = (s, pctTeks, redup) => {
+      g.globalAlpha = redup ? 0.85 : 1;
+      g.fillStyle = s.c; g.beginPath(); g.arc(22, y + 6, 4, 0, Math.PI * 2); g.fill();
+      g.textBaseline = 'top'; g.textAlign = 'left'; g.font = font(500, 12); g.fillStyle = redup ? XL.muted : XL.ink2; g.fillText(s.k, 32, y);
+      g.textAlign = 'right'; g.font = font(700, 12); g.fillStyle = redup ? XL.muted : XL.ink; g.fillText(fmtNum(s.n), W - 64, y);
+      g.font = font(500, 12); g.fillStyle = XL.muted; g.fillText(pctTeks, W - 16, y);
+      g.globalAlpha = 1; y += 18;
+    };
+    d.seg.filter((s) => s.n > 0 || s.selalu).forEach((s) => baris(s, fmtPct(tot ? (s.n / tot) * 100 : 0)));
+    if (d.luar && d.luar.length) {
+      y += 2; g.strokeStyle = XL.garis; g.lineWidth = 1; g.beginPath(); g.moveTo(16, y - 3); g.lineTo(W - 16, y - 3); g.stroke();
+      g.fillStyle = XL.muted; g.font = font(600, 10); g.textAlign = 'left'; g.textBaseline = 'top'; g.fillText('TIDAK DIHITUNG DALAM TOTAL', 16, y + 1); y += 16;
+      d.luar.forEach((s) => baris(s, '', true));
+    }
+  }
+  return cv.toDataURL('image/png');
+}
+
+/** Bagi kolom (lebar karakter) menjadi n rentang bersebelahan yang lebarnya hampir sama → [[awal, akhir], …] (1-based) */
+function bagiKolomXL(lebar, n) {
+  const total = lebar.reduce((a, b) => a + b, 0), out = [];
+  let mulai = 1, kum = 0;
+  for (let i = 1; i <= lebar.length; i++) {
+    kum += lebar[i - 1];
+    const target = (total * (out.length + 1)) / n, sisaKol = lebar.length - i, sisaKartu = n - out.length - 1;
+    if (out.length < n - 1 && (kum >= target - lebar[i - 1] / 2 || sisaKol === sisaKartu)) { out.push([mulai, i]); mulai = i + 1; }
+  }
+  out.push([mulai, lebar.length]);
+  return out;
+}
+
+async function unduhExcelDashboard(btn, D) {
+  if (!D) { toast('Dashboard belum siap.', 'err'); return; }
+  setBusy(btn, true, 'Menyiapkan Excel…');
+  try {
+    const ExcelJS = await loadExcelJS();
+    const tema = (S.setelan && S.setelan.tema) || {};
+    const primer = isHex6(tema.primer) ? tema.primer : '#1E3A5F', sek = isHex6(tema.sekunder) ? tema.sekunder : '#5B3E96';
+    const institusi = (S.setelan && S.setelan.institusi) || Store.get('institusi') || 'STIS Al Wafa';
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Rekap Mahasiswa ' + institusi; wb.created = new Date();
+    const ws = wb.addWorksheet('Dashboard', {
+      views: [{ showGridLines: false }],
+      pageSetup: { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true,
+        margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } }
+    });
+    const nKol = Math.max(16, ...D.tabel.map((t) => 1 + t.grup.length * 3));
+    const lebar = [17].concat(Array(nKol - 1).fill(7.4));
+    ws.columns = lebar.map((w) => ({ width: w }));
+    const fill = (hex) => ({ type: 'pattern', pattern: 'solid', fgColor: { argb: argb(hex) } });
+    const garis = (hex, st) => ({ style: st || 'thin', color: { argb: argb(hex) } });
+    const sel = (r, c, v, st) => {
+      const x = ws.getCell(r, c); if (v !== undefined) x.value = v;
+      if (st) Object.keys(st).forEach((k) => { if (st[k] !== undefined) x[k] = k === 'font' ? Object.assign({ name: 'Calibri', family: 2 }, st[k]) : st[k]; });
+      return x;
+    };
+    const gabung = (r1, c1, r2, c2, v, st) => { if (r1 !== r2 || c1 !== c2) ws.mergeCells(r1, c1, r2, c2); return sel(r1, c1, v, st); };
+    const bingkai = (r1, c1, r2, c2, hex) => { for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) ws.getCell(r, c).border = { top: garis(hex), left: garis(hex), bottom: garis(hex), right: garis(hex) }; };
+    const waktu = new Date();
+    const tglTeks = waktu.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }) + ' ' + pad(waktu.getHours(), 2) + '.' + pad(waktu.getMinutes(), 2);
+
+    // ---- Judul
+    let r = 1;
+    gabung(r, 1, r, nKol, 'REKAP DATA MAHASISWA ' + institusi.toUpperCase(), { font: { bold: true, size: 16, color: { argb: 'FFFFFFFF' } }, fill: fill(primer), alignment: { vertical: 'middle', indent: 1 } });
+    ws.getRow(r).height = 30; r++;
+    gabung(r, 1, r, nKol, 'Dashboard · Data Mahasiswa ' + semesterLabel(), { font: { size: 11, color: { argb: 'FFFFFFFF' } }, fill: fill(campurHex(primer, 82)), alignment: { vertical: 'middle', indent: 1 } });
+    ws.getRow(r).height = 20; r++;
+    const filterTeks = 'Prodi: ' + (D.prodi ? PRODI[D.prodi] + ' (' + D.prodi + ')' : 'Semua') + '   ·   Kelas: ' + (D.kelas ? (D.kelas.length ? D.kelas.join(', ') : 'tidak ada') : 'Semua');
+    gabung(r, 1, r, nKol, filterTeks + '   ·   Diunduh ' + tglTeks + (S.me && S.me.nama ? ' oleh ' + S.me.nama : ''), { font: { size: 9.5, color: { argb: argb(XL.ink2) } }, alignment: { vertical: 'middle', indent: 1 } });
+    ws.getRow(r).height = 18; r++;
+    gabung(r, 1, r, nKol, 'Total Mahasiswa = mahasiswa terdaftar (Aktif + Cuti). Mengundurkan Diri dan Lulus ditampilkan sebagai informasi dan tidak dihitung dalam total.', { font: { size: 9.5, italic: true, color: { argb: argb(XL.muted) } }, alignment: { vertical: 'middle', indent: 1 } });
+    ws.getRow(r).height = 16; r += 2;
+
+    // ---- Kartu ringkasan (5 kartu)
+    const wKartu = { sek, aktif: XL.aktif, cuti: XL.cuti, md: XL.md, lulus: XL.lulus };
+    const rk = r;
+    bagiKolomXL(lebar, D.kpi.length).forEach(([c1, c2], i) => {
+      const k = D.kpi[i], w = wKartu[k.warna] || sek, bg = campurHex(w, 7);
+      const st = (extra) => Object.assign({ fill: fill(bg), alignment: { vertical: 'middle', horizontal: 'left', indent: 1, wrapText: true } }, extra);
+      gabung(rk, c1, rk, c2, k.lbl.toUpperCase(), st({ font: { bold: true, size: 9, color: { argb: argb(XL.ink2) } } }));
+      gabung(rk + 1, c1, rk + 1, c2, k.val, st({ font: { bold: true, size: 22, color: { argb: argb(XL.ink) } }, numFmt: '#,##0' }));
+      gabung(rk + 2, c1, rk + 2, c2, k.lp ? 'L ' + fmtNum(k.lp.L) + '  ·  P ' + fmtNum(k.lp.P) + (k.lp.X ? '  ·  belum diisi ' + fmtNum(k.lp.X) : '') : '', st({ font: { size: 10, color: { argb: argb(XL.ink2) } } }));
+      gabung(rk + 3, c1, rk + 3, c2, k.cap, st({ font: { size: 9, color: { argb: argb(XL.muted) } } }));
+      for (let rr = rk; rr <= rk + 3; rr++) for (let cc = c1; cc <= c2; cc++) {
+        const b = {};
+        if (rr === rk) b.top = garis(w, 'thick');
+        if (rr === rk + 3) b.bottom = garis(XL.garis);
+        if (cc === c1) b.left = garis('#FFFFFF', 'medium');
+        if (cc === c2) b.right = garis('#FFFFFF', 'medium');
+        ws.getCell(rr, cc).border = b;
+      }
+    });
+    ws.getRow(rk).height = 20; ws.getRow(rk + 1).height = 34; ws.getRow(rk + 2).height = 18; ws.getRow(rk + 3).height = 18;
+    r = rk + 5;
+
+    // ---- Grafik (gambar)
+    const G = D.grafik, tinggi = 310;
+    const grafik = [
+      ['batang', { judul: 'Jumlah Mahasiswa per Angkatan', data: G.perTh.map(([t, n]) => ({ label: String(t), n, c: sek })) }],
+      ['batang', { judul: 'Jumlah Mahasiswa per Program Studi', data: G.perP.map(([p, n]) => ({ label: p, n, c: XL[p] || sek, redup: G.pf && G.pf !== p })) }],
+      ['donat', { judul: 'Komposisi Gender', total: G.tot, atas: fmtNum(G.tot), bawah: 'mahasiswa',
+        seg: [{ k: 'Laki-laki', n: G.lpAll.L, c: XL.L, selalu: 1 }, { k: 'Perempuan', n: G.lpAll.P, c: XL.P, selalu: 1 }, { k: 'Belum diisi', n: G.lpAll.X, c: XL.X }] }],
+      ['donat', { judul: 'Status Akademik', total: G.tot, atas: fmtPct(G.pctAktif), bawah: 'aktif',
+        seg: [{ k: 'Aktif', n: G.c.Aktif, c: XL.aktif, selalu: 1 }, { k: 'Cuti', n: G.c.Cuti, c: XL.cuti, selalu: 1 }],
+        luar: [{ k: 'Mengundurkan Diri', n: G.cl['Mengundurkan Diri'], c: XL.md }, { k: 'Lulus', n: G.cl.Lulus, c: XL.lulus }] }]
+    ];
+    const px = (w) => Math.round(w * 6.6 + 4);       // perkiraan aman lebar kolom → piksel (hindari gambar bertumpuk)
+    bagiKolomXL(lebar, 4).forEach(([c1, c2], i) => {
+      let w = 0; for (let c = c1; c <= c2; c++) w += px(lebar[c - 1]);
+      w -= 14;
+      const id = wb.addImage({ base64: gambarGrafikXL(grafik[i][0], grafik[i][1], w, tinggi, sek), extension: 'png' });
+      ws.addImage(id, { tl: { col: c1 - 1, row: r - 1 }, ext: { width: w, height: tinggi }, editAs: 'oneCell' });
+    });
+    const barisGrafik = Math.ceil(tinggi / 20) + 1;
+    for (let i = 0; i < barisGrafik; i++) ws.getRow(r + i).height = 15;
+    r += barisGrafik + 1;
+
+    // ---- Tabel rekap (header bertingkat, L | P | Total, baris Total) — sama persis dengan dashboard
+    const tint = (pct) => campurHex(sek, pct);
+    const abu = '#F3F3F6';
+    let catatanGender = false;
+    D.tabel.forEach((md) => {
+      const nC = 1 + md.grup.length * 3, h1 = r + 1, h2 = r + 2;
+      gabung(r, 1, r, nC, md.judul, { font: { bold: true, size: 12.5, color: { argb: argb(XL.ink) } }, alignment: { vertical: 'middle' } });
+      ws.getRow(r).height = 22;
+      gabung(h1, 1, h2, 1, md.judulBaris, { font: { bold: true, size: 10, color: { argb: argb(XL.ink) } }, fill: fill(tint(12)), alignment: { vertical: 'middle', horizontal: 'left', indent: 1 } });
+      md.grup.forEach((g, i) => {
+        const c0 = 2 + i * 3, luar = g.jenis === 'luar', tot = g.jenis === 'total';
+        gabung(h1, c0, h1, c0 + 2, g.label + (luar ? ' (tidak dihitung)' : ''), {
+          font: { bold: true, size: 10, color: { argb: argb(luar ? XL.muted : XL.ink) } }, fill: fill(luar ? abu : tint(tot ? 18 : 12)),
+          alignment: { vertical: 'middle', horizontal: 'center', wrapText: true }
+        });
+        ['L', 'P', 'Total'].forEach((t, j) => sel(h2, c0 + j, t, {
+          font: { bold: true, size: 9.5, color: { argb: argb(luar ? XL.muted : XL.ink2) } }, fill: fill(luar ? abu : tot ? tint(18) : tint(7)),
+          alignment: { vertical: 'middle', horizontal: 'center' }
+        }));
+      });
+      ws.getRow(h1).height = md.grup.some((g) => g.jenis === 'luar') ? 28 : 20; ws.getRow(h2).height = 18;
+      let rr = h2 + 1;
+      const tulisBaris = (row, akhir) => {
+        sel(rr, 1, row.label, { font: { bold: true, size: 10, color: { argb: argb(XL.ink) } }, alignment: { vertical: 'middle', horizontal: 'left', indent: 1 }, fill: akhir ? fill(tint(10)) : undefined });
+        row.cells.forEach((x, i) => {
+          const g = md.grup[i], luar = g.jenis === 'luar';
+          [x.L, x.P, x.T].forEach((n, j) => sel(rr, 2 + i * 3 + j, n, {
+            numFmt: '#,##0', alignment: { vertical: 'middle', horizontal: 'center' },
+            font: { size: 10, bold: j === 2 || akhir, color: { argb: argb(!n ? '#B4B7C2' : luar ? XL.muted : XL.ink) } },
+            fill: akhir ? fill(tint(10)) : luar ? fill('#FAFAFB') : undefined
+          }));
+        });
+        ws.getRow(rr).height = 18;
+        rr++;
+      };
+      const sepRows = [];
+      md.rows.forEach((row) => { if (row.cls === 'xt-sep') sepRows.push(rr); tulisBaris(row, false); });
+      tulisBaris(md.total, true);
+      // garis: tipis antarbaris, tebal pemisah kelompok, bingkai luar
+      for (let a = h1; a < rr; a++) for (let c = 1; c <= nC; c++) {
+        const x = ws.getCell(a, c), awalGrup = c > 1 && (c - 2) % 3 === 0, gi = Math.floor((c - 2) / 3), g = md.grup[gi];
+        const b = {
+          top: a === h1 ? garis('#CFCBDD') : sepRows.includes(a) ? garis('#BDB8CF', 'medium') : a === rr - 1 ? garis('#CFCBDD') : garis('#ECEAF2'),
+          bottom: a === rr - 1 ? garis('#CFCBDD') : garis('#ECEAF2'),
+          left: c === 1 ? garis('#CFCBDD') : awalGrup ? garis(g && g.pertama ? '#BDB8CF' : '#DAD7E5', g && g.pertama ? 'medium' : 'thin') : garis('#F1F0F5')
+        };
+        if (c === nC) b.right = garis('#CFCBDD'); else if (c === 1) b.right = garis('#DAD7E5');
+        x.border = b;
+      }
+      r = rr;
+      if (md.tanpaGender && !catatanGender) {
+        catatanGender = true;
+        gabung(r, 1, r, nC, 'Total memuat ' + fmtNum(md.tanpaGender) + ' mahasiswa yang jenis kelaminnya belum diisi (tidak masuk kolom L/P).', { font: { size: 9, italic: true, color: { argb: argb(XL.muted) } } });
+        r++;
+      }
+      r += 2;
+    });
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'Dashboard_Rekap_Mahasiswa_' + stampFile() + (D.prodi ? '_' + D.prodi : '') + (D.kelas ? '_' + (D.kelas.length ? D.kelas.map((k) => KELAS_PENDEK[k]).join('-') : 'tanpa-kelas') : '') + '.xlsx';
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+    toast('Excel dashboard diunduh (sesuai filter yang tampil).');
+  } catch (e) {
+    toast(e.message || String(e), 'err', 'Gagal membuat Excel');
+  } finally { setBusy(btn, false); }
+}
 
 /** Buka Data Mahasiswa dengan filter tertentu (dari angka di tabel rekap dashboard). */
 function bukaDaftarMahasiswa(f) {
@@ -328,7 +646,8 @@ registerPage('mahasiswa', {
   },
   filtered() {
     const f = this.f;
-    return S.mhs.filter((m) => (!f.prodi || m.prodi === f.prodi) && (!f.kelas || m.kelas === f.kelas) && (!f.status || m.status === f.status) &&
+    return S.mhs.filter((m) => (!f.prodi || m.prodi === f.prodi) && (!f.kelas || m.kelas === f.kelas) &&
+      (!f.status || (f.status === 'terdaftar' ? isTerdaftar(m) : m.status === f.status)) &&
       (!f.gender || (f.gender === '-' ? !m.gender : m.gender === f.gender)) &&
       (!f.tahun || String(m.tahun_masuk) === f.tahun) && cariCocok(f.q, [m.nama.toLowerCase(), m.nim, (m.nomor_surat || '').toLowerCase()]));
   },

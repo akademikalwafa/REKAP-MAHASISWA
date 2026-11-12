@@ -820,7 +820,7 @@ table.xt { border-collapse: collapse; width: 100%; font-size: 13.5px; font-varia
 .kf:has(input:checked) { background: var(--sek-tint); border-color: color-mix(in srgb, var(--sekunder) 40%, var(--line)); color: var(--ink); }
 .kf small { font-size: 12px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
 .kf-aksi { display: inline-flex; gap: 14px; margin-left: 4px; font-size: 13.5px; }
-.kf-sum { margin-left: auto; display: block; line-height: 1.6; padding: 9px 14px; border-radius: 12px; font-size: 14px; color: var(--ink-2);
+.kf-sum { display: block; line-height: 1.6; padding: 9px 14px; border-radius: 12px; font-size: 14px; color: var(--ink-2);
   background: color-mix(in srgb, var(--sekunder) 7%, var(--kartu)); border: 1px solid color-mix(in srgb, var(--sekunder) 22%, var(--line)); }
 .kf-sum b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .kf-sum .big { font-size: 20px; font-weight: 800; color: var(--sek-ink); font-variant-numeric: tabular-nums; }
@@ -839,4 +839,21 @@ table.xt { border-collapse: collapse; width: 100%; font-size: 13.5px; font-varia
   .kf { flex: 1 1 calc(50% - 8px); }
   .kf-aksi { flex-basis: 100%; justify-content: flex-end; }
   .kf-sum { margin-left: 0; width: 100%; }
+  .kf-end { margin-left: 0; width: 100%; }
+  .kf-unduh { flex: 1 1 auto; justify-content: center; }
 }
+
+/* =====================================================================
+   v1.3 — TOTAL = AKTIF + CUTI, TABEL PER ANGKATAN, UNDUH EXCEL
+   ===================================================================== */
+.kf-end { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.kf-unduh { white-space: nowrap; }
+.legend-list li.legend-sep { display: block; margin-top: 4px; padding-top: 7px; border-top: 1px solid var(--line); font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.legend-list li.luar span, .legend-list li.luar b { color: var(--muted); }
+.xt th.xt-luar { background: color-mix(in srgb, var(--muted) 9%, var(--kartu)); color: var(--muted); }
+.xt thead tr:first-child th.xt-luar { background: color-mix(in srgb, var(--muted) 12%, var(--kartu)); color: var(--ink-2); }
+.xt th.xt-grp small { display: block; font-size: 10.5px; font-weight: 600; letter-spacing: 0; color: var(--muted); text-transform: none; }
+.xt td.luar { color: var(--muted); background: color-mix(in srgb, var(--muted) 4%, var(--kartu)); }
+.xt td.luar.tot { color: var(--ink-2); }
+.xt td.luar1, .xt thead th.xt-luar1 { border-left: 2px solid color-mix(in srgb, var(--muted) 35%, var(--line)) !important; }
+.xt tbody tr.xt-sep th, .xt tbody tr.xt-sep td { border-top: 2px solid var(--line); }
